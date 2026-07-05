@@ -1,11 +1,11 @@
 // ==================== CONFIG ====================
-const UPSTREAM_PRIMARY = 'https://bu0eg1tdzu.cloudflare-gateway.com/dns-query';
-const UPSTREAM_FALLBACK = 'https://rhpcv957tj.cloudflare-gateway.com/dns-query';
+const UPSTREAM_PRIMARY = 'https://o8xgn5d0fx.cloudflare-gateway.com/dns-query';
+const UPSTREAM_FALLBACK = 'https://o8xgn5d0fx.cloudflare-gateway.com/dns-query';
 const UPSTREAM_GEO_BYPASS = 'https://dns.mullvad.net/dns-query'; // Re-resolve without ECS when geo-block returns loopback
 const UPSTREAM_TIMEOUT = 5000;
 
 // Refresh interval for ALL lists (blocklist, allowlists, private TLDs, redirect rules)
-const ALL_LISTS_REFRESH_INTERVAL = 3600000; // 1 hour
+const ALL_LISTS_REFRESH_INTERVAL = 3600000; // 100 hour
 
 const AD_BLOCK_ENABLED = true;
 const BLOCKLIST_URL = '/rules/blocklists.txt';
