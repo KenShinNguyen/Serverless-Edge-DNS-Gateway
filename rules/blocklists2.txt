@@ -1,0 +1,3 @@
+# HaGeZi Pro++ DNS Blocklist (jsDelivr mirror)
+# Source: https://github.com/hagezi/dns-blocklists
+https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/domains/pro.plus.txt
