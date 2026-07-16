@@ -32,6 +32,7 @@ extract_domains() {
 echo "Downloading and processing blocklists..."
 curl -fsSL --max-time 60 \
 https://raw.githubusercontent.com/bibicadotnet/blocklist_minimal/main/blocklists.txt
+https://github.com/mullvad/dns-blocklists/blob/main/output/doh/doh_privacy.txt
 https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/domains/pro.plus.txt \
 | extract_domains > "$BLOCK_TMP"
 
