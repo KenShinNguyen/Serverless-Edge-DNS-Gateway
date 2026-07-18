@@ -29,12 +29,15 @@ extract_domains() {
 
 echo "Downloading and processing blocklists..."
 curl -fsSL --max-time 60 \
-https://raw.githubusercontent.com/bibicadotnet/blocklist_minimal/main/blocklists.txt
-https://github.com/mullvad/dns-blocklists/blob/main/output/doh/doh_privacy.txt
+https://raw.githubusercontent.com/bibicadotnet/blocklist_minimal/main/blocklists.txt \
+https://github.com/mullvad/dns-blocklists/blob/main/output/doh/doh_privacy.txt \
 https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/domains/pro.plus.txt \
 | extract_domains > "$BLOCK_TMP"
 
 # Di chuyển file tmp vào thư mục đích
 mv "$BLOCK_TMP" "$BLOCK_OUT"
 
+# Đếm số lượng domain trong blocklist
+DOMAIN_COUNT=$(wc -l < "$BLOCK_OUT")
 echo "Done. Files saved to $BLOCK_OUT"
+echo "Total domains blocked: $DOMAIN_COUNT"
