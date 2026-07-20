@@ -33,7 +33,6 @@ https://raw.githubusercontent.com/bibicadotnet/blocklist_minimal/main/blocklists
 https://github.com/mullvad/dns-blocklists/blob/main/output/doh/doh_privacy.txt \
 https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/domains/pro.plus.txt \
 https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/gambling-onlydomains.txt \
-https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/nsfw-onlydomains.txt \
 | extract_domains > "$BLOCK_TMP"
 
 # Di chuyển file tmp vào thư mục đích
