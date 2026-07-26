@@ -29,7 +29,7 @@ extract_domains() {
 
 echo "Downloading and processing blocklists..."
 curl -fsSL --max-time 60 \
-https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/domains/pro.plus.txt \
+https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/domains/pro.txt \
 https://v.firebog.net/hosts/AdguardDNS.txt \
 https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/gambling-onlydomains.txt \
 https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/domains/native.winoffice.txt \
