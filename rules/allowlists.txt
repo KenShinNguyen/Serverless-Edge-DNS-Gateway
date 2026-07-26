@@ -3,9 +3,9 @@
 #
 # 1. Lớp Edge (Pages Function): domain trong file này KHÔNG bao giờ bị chặn
 #    bởi rules/blocklists.txt (ưu tiên cao hơn blocklist).
-# 2. Lớp Cloudflare Gateway (CGPS): workflow trong repo
-#    cloudflare-gateway-pihole-scripts kéo file này qua raw URL
-#    (biến ALLOWLIST_URLS) để đồng bộ allowlist giữa 2 lớp.
+# 2. Lớp Cloudflare Gateway (CGPS): workflow
+#    .github/workflows/Update_Gateway_Security_Lists.yml kéo file này qua
+#    raw URL (biến ALLOWLIST_URLS) để đồng bộ allowlist giữa 2 lớp.
 #
 # Mỗi dòng 1 domain (exact match), ví dụ:
 # example.com

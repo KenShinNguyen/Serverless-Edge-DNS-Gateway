@@ -9,15 +9,17 @@
 # - Lớp 1 đã chặn quảng cáo/tracking bằng list lớn (~1M domain) ngay tại edge,
 #   nên lớp này CHỈ đẩy list bảo mật (HaGeZi TIF) vào Gateway để không lãng
 #   phí quota 300k domain của gói Zero Trust Free.
-# - Allowlist được đồng bộ với Lớp 1: kéo rules/allowlists.txt từ repo
-#   Serverless-Edge-DNS-Gateway qua raw URL.
+# - Workflow chạy code CGPS (mrrfv/cloudflare-gateway-pihole-scripts@v1) nên
+#   đặt được ngay trong repo này — không cần repo riêng.
+# - Allowlist được đồng bộ với Lớp 1: kéo rules/allowlists.txt của repo này
+#   qua raw URL.
 # - Chạy hằng ngày (domain phishing/malware thay đổi nhanh hơn list quảng cáo).
 # - Có thể override bằng GitHub Actions Variables: BLOCKLIST_URLS /
 #   ALLOWLIST_URLS (mỗi dòng 1 URL).
 #
 # Secrets bắt buộc: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID
 # (phải là tài khoản sở hữu endpoint Gateway khai trong UPSTREAM_PRIMARY
-# của Serverless-Edge-DNS-Gateway).
+# của functions/[[path]].js).
 # Secrets tùy chọn: CLOUDFLARE_LIST_ITEM_LIMIT, DISCORD_WEBHOOK_URL, PING_URL
 # ============================================================================
 name: Update Filter Lists
@@ -28,6 +30,11 @@ on:
   push:
     branches:
       - main
+    paths:
+      # Chỉ chạy khi đổi cấu hình lớp 2 hoặc allowlist dùng chung
+      # (không chạy theo các auto-commit blocklists hằng giờ của lớp 1)
+      - ".github/workflows/Update_Gateway_Security_Lists.yml"
+      - "rules/allowlists.txt"
   workflow_dispatch:
 
 concurrency:

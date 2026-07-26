@@ -100,12 +100,13 @@ Thiết bị ──DoH──▶ Pages Function (Lớp 1: quảng cáo/tracking ~
 | Lớp | Nhiệm vụ | Danh sách |
 | :--- | :--- | :--- |
 | Edge (project này) | Quảng cáo, tracking, cờ bạc, telemetry | HaGeZi Pro++, AdGuard DNS,... (`update_lists.sh`) |
-| Gateway (CGPS) | Malware, phishing, lừa đảo (TIF) | HaGeZi TIF Mini (`.github/workflows/main.yml` trong repo CGPS) |
+| Gateway (CGPS) | Malware, phishing, lừa đảo (TIF) | HaGeZi TIF Mini ([.github/workflows/Update_Gateway_Security_Lists.yml](.github/workflows/Update_Gateway_Security_Lists.yml)) |
 
 **Lưu ý khi thiết lập:**
 
-*   Chạy workflow CGPS với **đúng tài khoản Cloudflare** sở hữu endpoint Gateway đã khai trong `UPSTREAM_PRIMARY` / `UPSTREAM_FALLBACK`.
-*   [rules/allowlists.txt](rules/allowlists.txt) là **allowlist dùng chung**: lớp Edge đọc trực tiếp, còn workflow CGPS kéo qua raw URL — thêm domain một lần là được mở chặn ở cả 2 lớp.
+*   Workflow lớp 2 nằm **ngay trong repo này** (lúc chạy nó checkout code CGPS từ `mrrfv/cloudflare-gateway-pihole-scripts@v1`, nên không cần repo riêng). Bật workflow trong tab **Actions** và tạo 2 secrets cho repo: `CLOUDFLARE_API_TOKEN` (quyền đọc/sửa Zero Trust) và `CLOUDFLARE_ACCOUNT_ID`.
+*   Dùng **đúng tài khoản Cloudflare** sở hữu endpoint Gateway đã khai trong `UPSTREAM_PRIMARY` / `UPSTREAM_FALLBACK`.
+*   [rules/allowlists.txt](rules/allowlists.txt) là **allowlist dùng chung**: lớp Edge đọc trực tiếp, còn workflow lớp 2 kéo qua raw URL — thêm domain một lần là được mở chặn ở cả 2 lớp.
 *   Nên bật thêm các **Security Category có sẵn** (malware, phishing, new domains) trong Gateway policy của Zero Trust — hoàn toàn miễn phí và không tính vào quota 300k.
 *   Giữ nguyên kiểu chặn mặc định của Gateway (trả về `0.0.0.0`). **Không** dùng kiểu chặn trả về `127.0.0.1` — logic Geo-Bypass sẽ coi đó là geo-block và re-resolve qua Mullvad, vô tình mở chặn domain đó.
 
