@@ -2,7 +2,9 @@ name: Update DNS Blocklists
 
 on:
   schedule:
-    - cron: '0 * * * *'
+    # Mỗi 3 giờ — đủ tươi cho list quảng cáo, tránh phình lịch sử git
+    # (mỗi commit là ~25MB blocklist)
+    - cron: '0 */3 * * *'
   workflow_dispatch:
 
 permissions:

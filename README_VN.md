@@ -9,7 +9,7 @@ Dịch vụ DNS-over-HTTPS (DoH) bảo mật, hiệu năng cao, chạy trên h�
 
 *   **Mức độ sử dụng miễn phí**: chạy hoàn toàn trên gói Free của Cloudflare Pages với hạn mức 100,000 requests mỗi ngày. Với mức tiêu thụ trung bình 200 – 4000 requests/thiết bị/ngày, bạn có thể sử dụng khoảng 10-20 thiết bị trên cùng một tài khoản (thậm chí 100-200 thiết bị nếu dùng thông thường)
 *   **Hỗ trợ Custom Domain**: Dễ dàng gắn tên miền riêng để có địa chỉ DNS ngắn gọn, chuyên nghiệp. Bạn có thể sử dụng nhiều tài khoản Cloudflare khác nhau để nhân bản hạn mức (x100k/tài khoản) mà vẫn dùng được tên miền tùy chỉnh.
-*   **Chặn quảng cáo thông minh**: Tự động lọc quảng cáo tại Edge bằng các danh sách chuyên nghiệp (AdGuard, ABPVN, Bypass-VN...), được cập nhật tự động mỗi giờ.
+*   **Chặn quảng cáo thông minh**: Tự động lọc quảng cáo tại Edge bằng các danh sách chuyên nghiệp (AdGuard, ABPVN, Bypass-VN...), được cập nhật tự động mỗi 3 giờ.
 *   **Tối ưu hóa vị trí địa lý (ECS - RFC 7871)**: Tự động chèn EDNS Client Subnet (IPv4 `/24`, IPv6 `/48`) để đảm bảo các CDN (như Akamai, CloudFront, Fastly, BunnyCDN, Gcore) điều hướng bạn đến máy chủ gần nhất.
 *   **Độ tin cậy cao với hệ thống dự phòng**: 
     *   **Primary/Fallback**: Tự động chuyển sang máy chủ dự phòng (*khác nhà cung cấp*) nếu máy chủ chính gặp sự cố.
@@ -76,7 +76,7 @@ Các quy tắc nằm trong thư mục `rules/`. Khi bạn thực hiện thay đ�
 
 Các quy tắc chi tiết:
 
-*   **`blocklists.txt`**: Được GitHub Actions cập nhật tự động mỗi giờ.
+*   **`blocklists.txt`**: Được GitHub Actions cập nhật tự động mỗi 3 giờ.
     *   **Cách cấu hình**: Thay đổi các URL trong lệnh `curl` bên trong file [update_lists.sh](update_lists.sh) để thêm hoặc bớt các nguồn chặn.
     *   **Chốt an toàn**: nếu tải lỗi khiến danh sách tụt xuống dưới 100.000 domain, script sẽ huỷ cập nhật và giữ nguyên danh sách cũ.
 *   **`allowlists.txt`**: Quản lý **thủ công** — mỗi dòng một domain. Domain trong đây luôn được cho phép kể cả khi có tên trong `blocklists.txt` (tránh chặn nhầm các domain quan trọng như ngân hàng, thanh toán).

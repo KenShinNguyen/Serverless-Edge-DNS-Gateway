@@ -74,6 +74,29 @@ function tokenMatches(provided, expected) {
   return diff === 0;
 }
 
+// Mask upstream hostnames in /debug output so a personal Gateway URL is
+// never exposed verbatim (first hostname label truncated to 3 chars)
+function maskUpstream(url) {
+  try {
+    const u = new URL(url);
+    const labels = u.hostname.split('.');
+    labels[0] = labels[0].length > 3 ? labels[0].slice(0, 3) + '***' : '***';
+    return `${u.protocol}//${labels.join('.')}${u.pathname}`;
+  } catch { return '***'; }
+}
+
+// Deterministic UUID (v5-style, SHA-1 based) derived from the deployment
+// hostname — keeps the Apple profile identity stable across downloads so a
+// reinstall replaces the existing profile instead of stacking duplicates
+async function hostUuid(host, salt) {
+  const data = new TextEncoder().encode(`serverless-edge-dns-gateway:${salt}:${host}`);
+  const hash = new Uint8Array(await crypto.subtle.digest('SHA-1', data));
+  hash[6] = (hash[6] & 0x0f) | 0x50; // version 5
+  hash[8] = (hash[8] & 0x3f) | 0x80; // RFC 4122 variant
+  const hex = [...hash.slice(0, 16)].map(b => b.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
 // Pre-compiled regex patterns for performance
 const IPV4_MAPPED_REGEX = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i;
 const IPV6_VALID_REGEX = /^[0-9a-f:]+$/i;
@@ -97,7 +120,8 @@ async function fetchList(url) {
     const text = await res.text();
     const domains = new Set();
     for (const line of text.split('\n')) {
-      const d = line.trim();
+      // Lowercase so mixed-case entries still match (queries are lowercased)
+      const d = line.trim().toLowerCase();
       if (d && !d.startsWith('#') && !d.startsWith('!')) domains.add(d);
     }
     return domains;
@@ -729,10 +753,12 @@ async function resolveQuery(query, clientIP) {
     }
   }
 
-  // If response contains 127.0.0.1, re-resolve via geo-bypass upstream (without ECS geo-lock)
+  // If response contains 127.0.0.1, re-resolve via geo-bypass upstream.
+  // Send the ORIGINAL query (no ECS): the injected subnet is what triggers
+  // the geo-lock, and it would needlessly expose the client subnet to Mullvad.
   if (result && hasLoopbackInAnswer(result)) {
     try {
-      const respMullvad = await forwardQuery(processed, UPSTREAM_GEO_BYPASS);
+      const respMullvad = await forwardQuery(query, UPSTREAM_GEO_BYPASS);
       if (!hasLoopbackInAnswer(respMullvad)) return respMullvad;
       // Mullvad success nhưng vẫn có loopback → geo-block thực sự
       return buildNxdomain(query);
@@ -773,9 +799,14 @@ async function handleDNSQuery(request, context) {
   } else if (request.method === 'GET') {
     const dns = new URL(request.url).searchParams.get('dns');
     if (!dns) return new Response('Missing dns parameter', { status: 400, headers: cors });
-    const b64 = dns.replace(/-/g, '+').replace(/_/g, '/');
-    const padded = b64 + '=='.slice(0, (4 - b64.length % 4) % 4);
-    query = Uint8Array.from(atob(padded), c => c.charCodeAt(0)).buffer;
+    try {
+      const b64 = dns.replace(/-/g, '+').replace(/_/g, '/');
+      const padded = b64 + '=='.slice(0, (4 - b64.length % 4) % 4);
+      query = Uint8Array.from(atob(padded), c => c.charCodeAt(0)).buffer;
+    } catch {
+      // atob throws on malformed base64 — answer 400 instead of crashing
+      return new Response('Invalid dns parameter', { status: 400, headers: cors });
+    }
   } else {
     return new Response('Method not allowed', { status: 405, headers: cors });
   }
@@ -799,11 +830,11 @@ async function handleDNSQuery(request, context) {
     for (const domain of domains) {
       if (!domain) continue;
 
-      // Mullvad Dedicated Upstream
+      // Mullvad Dedicated Upstream — send the original query without ECS:
+      // Mullvad strips ECS anyway, so injecting it only leaks the client subnet
       if (MULLVAD_UPSTREAM_ENABLED && isMullvadDomain(domain)) {
         try {
-          const processed = injectECS(query, clientIP);
-          const data = await forwardQuery(processed, UPSTREAM_GEO_BYPASS);
+          const data = await forwardQuery(query, UPSTREAM_GEO_BYPASS);
           return new Response(data, {
             headers: { ...cors, 'Content-Type': 'application/dns-message', 'X-Upstream': 'Mullvad' }
           });
@@ -881,7 +912,7 @@ async function handleRequest(request, context) {
       await ensureBlocklistsLoaded(request.url, context);
     }
     return new Response(JSON.stringify({
-      upstreams: { primary: UPSTREAM_PRIMARY, fallback: UPSTREAM_FALLBACK, geoBypass: UPSTREAM_GEO_BYPASS },
+      upstreams: { primary: maskUpstream(UPSTREAM_PRIMARY), fallback: maskUpstream(UPSTREAM_FALLBACK), geoBypass: maskUpstream(UPSTREAM_GEO_BYPASS) },
       adBlock: { enabled: AD_BLOCK_ENABLED, blocklist: adBlocklist.size, allowlist: adAllowlist.size, lastFetch: blocklistLastFetch ? new Date(blocklistLastFetch).toISOString() : 'never' },
       ecs: { enabled: ECS_INJECTION_ENABLED, prefixV4: `/${ECS_PREFIX_V4}`, prefixV6: `/${ECS_PREFIX_V6}` },
       blockedTypes: { ANY: BLOCK_ANY, AAAA: BLOCK_AAAA, PTR: BLOCK_PTR, HTTPS: BLOCK_HTTPS },
@@ -894,9 +925,9 @@ async function handleRequest(request, context) {
   if (route === 'apple') {
     const host = new URL(request.url).hostname;
     const dohUrl = `https://${host}/dns-query${DOH_TOKEN ? `/${DOH_TOKEN}` : ''}`;
-    const uuid1 = crypto.randomUUID();
-    const uuid2 = crypto.randomUUID();
-    const uuid3 = crypto.randomUUID();
+    const profileId = `com.serverless-edge-dns-gateway.${host}`;
+    const uuidProfile = await hostUuid(host, 'profile');
+    const uuidPayload = await hostUuid(host, 'dns-payload');
     const profile = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -916,11 +947,11 @@ async function handleRequest(request, context) {
             <key>PayloadDisplayName</key>
             <string>Serverless Edge DNS Gateway</string>
             <key>PayloadIdentifier</key>
-            <string>com.cloudflare.${uuid1}.dnsSettings.managed</string>
+            <string>${profileId}.dnsSettings.managed</string>
             <key>PayloadType</key>
             <string>com.apple.dnsSettings.managed</string>
             <key>PayloadUUID</key>
-            <string>${uuid3}</string>
+            <string>${uuidPayload}</string>
             <key>PayloadVersion</key>
             <integer>1</integer>
             <key>ProhibitDisablement</key>
@@ -932,13 +963,13 @@ async function handleRequest(request, context) {
     <key>PayloadDisplayName</key>
     <string>Serverless Edge DNS Gateway - ${host}</string>
     <key>PayloadIdentifier</key>
-    <string>com.cloudflare.${uuid2}</string>
+    <string>${profileId}</string>
     <key>PayloadRemovalDisallowed</key>
     <false/>
     <key>PayloadType</key>
     <string>Configuration</string>
     <key>PayloadUUID</key>
-    <string>${uuid2}</string>
+    <string>${uuidProfile}</string>
     <key>PayloadVersion</key>
     <integer>1</integer>
 </dict>
