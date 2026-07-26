@@ -2,11 +2,22 @@ export default {
     async fetch() {
         return new Response("Cron Worker is running.", { status: 200 });
     },
-    async scheduled() {
+    async scheduled(event, env) {
         // ================= Thông tin tài khoản domain =================
-        const CF_API_TOKEN = "cfut_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
-        const CF_ZONE_ID = "2dabd99xxxxxxxxxxxxxxxxxx";
-        const CF_RECORD_ID = "b7f08fxxxxxxxxxxxxxxxxx";
+        // KHÔNG hardcode token/ID vào source code — cấu hình qua Worker
+        // secrets/variables (Dashboard > Worker > Settings > Variables,
+        // hoặc `wrangler secret put CF_API_TOKEN`):
+        //   CF_API_TOKEN  (secret)  — API token có quyền sửa DNS record
+        //   CF_ZONE_ID    (var)     — Zone ID của domain
+        //   CF_RECORD_ID  (var)     — ID của DNS record cần xoay
+        const CF_API_TOKEN = env.CF_API_TOKEN;
+        const CF_ZONE_ID = env.CF_ZONE_ID;
+        const CF_RECORD_ID = env.CF_RECORD_ID;
+
+        if (!CF_API_TOKEN || !CF_ZONE_ID || !CF_RECORD_ID) {
+            console.log("Thiếu cấu hình: cần đặt CF_API_TOKEN, CF_ZONE_ID, CF_RECORD_ID trong Worker Variables/Secrets.");
+            return;
+        }
 
         const list = `
 serverless-edge-dns-gateway-0ei.pages.dev

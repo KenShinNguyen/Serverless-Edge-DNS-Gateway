@@ -33,15 +33,22 @@ https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/domains/pro.plus.txt \
 https://v.firebog.net/hosts/AdguardDNS.txt \
 https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/gambling-onlydomains.txt \
 https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/domains/native.winoffice.txt \
-https://github.com/mullvad/dns-blocklists/blob/main/output/doh/doh_privacy.txt \
+https://raw.githubusercontent.com/mullvad/dns-blocklists/main/output/doh/doh_privacy.txt \
 https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/domains/native.xiaomi.txt \
 https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/domains/native.apple.txt \
 | extract_domains > "$BLOCK_TMP"
 
+# Chốt an toàn: nếu tải lỗi/thiếu nguồn làm danh sách quá nhỏ,
+# giữ nguyên blocklist cũ thay vì ghi đè bằng danh sách hỏng
+MIN_DOMAINS=100000
+DOMAIN_COUNT=$(wc -l < "$BLOCK_TMP")
+if [ "$DOMAIN_COUNT" -lt "$MIN_DOMAINS" ]; then
+  echo "ERROR: chỉ trích xuất được $DOMAIN_COUNT domain (< $MIN_DOMAINS). Giữ nguyên blocklist hiện tại." >&2
+  exit 1
+fi
+
 # Di chuyển file tmp vào thư mục đích
 mv "$BLOCK_TMP" "$BLOCK_OUT"
 
-# Đếm số lượng domain trong blocklist
-DOMAIN_COUNT=$(wc -l < "$BLOCK_OUT")
 echo "Done. Files saved to $BLOCK_OUT"
 echo "Total domains blocked: $DOMAIN_COUNT"
