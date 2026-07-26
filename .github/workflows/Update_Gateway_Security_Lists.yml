@@ -1,0 +1,106 @@
+# ============================================================================
+# Lớp 2 (Cloudflare Gateway) trong kiến trúc lọc DNS 2 lớp:
+#
+#   Thiết bị ──DoH──▶ Serverless-Edge-DNS-Gateway (Lớp 1: quảng cáo/tracking)
+#                            │
+#                            ▼
+#                  Cloudflare Gateway (Lớp 2: workflow này — malware/phishing)
+#
+# - Lớp 1 đã chặn quảng cáo/tracking bằng list lớn (~1M domain) ngay tại edge,
+#   nên lớp này CHỈ đẩy list bảo mật (HaGeZi TIF) vào Gateway để không lãng
+#   phí quota 300k domain của gói Zero Trust Free.
+# - Allowlist được đồng bộ với Lớp 1: kéo rules/allowlists.txt từ repo
+#   Serverless-Edge-DNS-Gateway qua raw URL.
+# - Chạy hằng ngày (domain phishing/malware thay đổi nhanh hơn list quảng cáo).
+# - Có thể override bằng GitHub Actions Variables: BLOCKLIST_URLS /
+#   ALLOWLIST_URLS (mỗi dòng 1 URL).
+#
+# Secrets bắt buộc: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID
+# (phải là tài khoản sở hữu endpoint Gateway khai trong UPSTREAM_PRIMARY
+# của Serverless-Edge-DNS-Gateway).
+# Secrets tùy chọn: CLOUDFLARE_LIST_ITEM_LIMIT, DISCORD_WEBHOOK_URL, PING_URL
+# ============================================================================
+name: Update Filter Lists
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_ENV: production
+  # Lớp 2 chỉ lo bảo mật: malware / phishing / scam.
+  # HaGeZi TIF Mini (~161k domain) nằm gọn trong quota 300k của gói Free.
+  # KHÔNG dùng TIF Medium (~398k) hay TIF Full (~2.1M): vượt quota, CGPS sẽ
+  # cắt bớt phần vượt một cách ngẫu nhiên.
+  DEFAULT_BLOCKLIST_URLS: |
+    https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/domains/tif.mini.txt
+  # Dòng đầu: allowlist dùng chung với Lớp 1 (Serverless-Edge-DNS-Gateway).
+  # Các dòng sau: chống chặn nhầm phổ biến của list bảo mật.
+  DEFAULT_ALLOWLIST_URLS: |
+    https://raw.githubusercontent.com/KenShinNguyen/Serverless-Edge-DNS-Gateway/main/rules/allowlists.txt
+    https://raw.githubusercontent.com/AdguardTeam/HttpsExclusions/master/exclusions/banks.txt
+    https://raw.githubusercontent.com/Dogino/Discord-Phishing-URLs/main/official-domains.txt
+    https://raw.githubusercontent.com/boutetnico/url-shorteners/master/list.txt
+
+jobs:
+  cgps:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          repository: "mrrfv/cloudflare-gateway-pihole-scripts"
+          ref: "v1"
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: ".node-version"
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Download allowlists
+        run: npm run download:allowlist
+        env:
+          ALLOWLIST_URLS: ${{ vars.ALLOWLIST_URLS || env.DEFAULT_ALLOWLIST_URLS }}
+
+      - name: Download blocklists
+        run: npm run download:blocklist
+        env:
+          BLOCKLIST_URLS: ${{ vars.BLOCKLIST_URLS || env.DEFAULT_BLOCKLIST_URLS }}
+
+      - name: Create or update rules and lists
+        run: npm run cloudflare-create
+        env:
+          # Giữ block response mặc định (0.0.0.0). KHÔNG cấu hình Gateway trả
+          # về 127.0.0.1: logic Geo-Bypass của Lớp 1 sẽ coi đó là geo-block
+          # và re-resolve qua Mullvad, vô tình mở chặn domain.
+          BLOCK_PAGE_ENABLED: ${{ vars.BLOCK_PAGE_ENABLED }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_LIST_ITEM_LIMIT: ${{ secrets.CLOUDFLARE_LIST_ITEM_LIMIT }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+
+      - name: Send ping request
+        if: env.PING_URL != ''
+        run: |
+          curl "${{ env.PING_URL }}"
+        env:
+          PING_URL: ${{ secrets.PING_URL }}
+
+  keepalive:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - uses: liskin/gh-workflow-keepalive@v1
