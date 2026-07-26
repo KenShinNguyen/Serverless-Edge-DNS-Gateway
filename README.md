@@ -13,7 +13,7 @@ A secure, high-performance DNS-over-HTTPS (DoH) proxy running on Cloudflare's gl
 
 *   **100% Free Usage**: Fully hosted on the Cloudflare Pages Free Tier with a limit of 100,000 requests per day. Given an average consumption of 200 – 4,000 requests per device daily, a single account can comfortably support 10 – 20 devices (or even 100 – 200 devices with casual usage).
 *   **Custom Domain Scaling**: Attach your own domain for a professional, short DNS endpoint. You can spread usage across multiple Cloudflare accounts to multiply your quota (100k per account) while keeping your custom domains.
-*   **Smart Adblocking**: Local filtering using professional lists (AdGuard, ABPVN, Bypass-VN, etc.), automatically updated **every hour**.
+*   **Smart Adblocking**: Local filtering using professional lists (AdGuard, ABPVN, Bypass-VN, etc.), automatically updated **every 3 hours**.
 *   **ECS Geo-Optimization (RFC 7871)**: Injects EDNS Client Subnet (IPv4 `/24`, IPv6 `/48`) to ensure CDNs (Akamai, CloudFront, Fastly, BunnyCDN, Gcore) resolve you to the nearest servers.
 *   **Sequential Failover Reliability**: 
     *   **Primary/Fallback**: Tries the primary upstream first, with automatic failover to a *different* backup resolver if it fails.
@@ -80,7 +80,7 @@ Rules are located in the `rules/` folder. When you modify and commit these files
 
 Detailed rules:
 
-*   **`blocklists.txt`**: Automatically updated **every hour** by the GitHub Actions workflow.
+*   **`blocklists.txt`**: Automatically updated **every 3 hours** by the GitHub Actions workflow.
     *   **How to configure**: Edit the URLs in the `curl` command inside [update_lists.sh](update_lists.sh) to add or remove filtering sources.
     *   **Safety guard**: if a download failure would shrink the list below 100,000 domains, the update aborts and the previous list is kept.
 *   **`allowlists.txt`**: Maintained **manually** — add one domain per line. Domains here override `blocklists.txt` and are never blocked even if flagged by a filter (prevents false positives on critical domains like banking or payment services).
