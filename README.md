@@ -92,6 +92,37 @@ Detailed rules:
 
 ---
 
+## 🧱 Layer 2: Cloudflare Gateway Security Filtering (CGPS)
+
+This project pairs naturally with [cloudflare-gateway-pihole-scripts (CGPS)](../../../cloudflare-gateway-pihole-scripts) in a **two-layer filtering architecture**, since the upstream (`UPSTREAM_PRIMARY`) is already a Cloudflare Gateway DoH endpoint:
+
+```
+Device ──DoH──▶ Pages Function (Layer 1: ads/tracking ~1M domains, ECS, redirects)
+                      │
+                      ▼
+            Cloudflare Gateway (Layer 2: CGPS-managed malware/phishing lists
+                      │          + built-in Zero Trust security categories)
+                      ▼
+                 Internet DNS
+```
+
+**Division of labor (avoids wasting the 300k-domain Gateway quota):**
+
+| Layer | Handles | Lists |
+| :--- | :--- | :--- |
+| Edge (this project) | Ads, tracking, gambling, telemetry | HaGeZi Pro++, AdGuard DNS, etc. (`update_lists.sh`) |
+| Gateway (CGPS) | Malware, phishing, scam (TIF) | HaGeZi TIF Mini ([.github/workflows/Update_Gateway_Security_Lists.yml](.github/workflows/Update_Gateway_Security_Lists.yml)) |
+
+**Setup notes:**
+
+*   The Layer 2 workflow lives **in this repo** (it checks out the CGPS code from `mrrfv/cloudflare-gateway-pihole-scripts@v1` at runtime, so no separate repo is needed). Enable it in the **Actions** tab and create two repository secrets: `CLOUDFLARE_API_TOKEN` (Zero Trust read/edit permissions) and `CLOUDFLARE_ACCOUNT_ID`.
+*   Use the **same Cloudflare account** that owns the Gateway endpoint configured in `UPSTREAM_PRIMARY` / `UPSTREAM_FALLBACK`.
+*   [rules/allowlists.txt](rules/allowlists.txt) is the **shared allowlist**: the Edge layer reads it directly, and the Layer 2 workflow pulls it via raw URL — add a domain once and it is unblocked on both layers.
+*   Additionally enable the built-in **Security Categories** (malware, phishing, new domains) in your Zero Trust Gateway policies — they are free and do not count against the 300k list quota.
+*   Keep the Gateway block response at its default (`0.0.0.0`). Do **not** use a block response of `127.0.0.1` — the Geo-Bypass logic treats loopback answers as geo-blocking and would re-resolve (unblock) them via Mullvad.
+
+---
+
 ## 📱 Setup Instructions
 
 ### Browsers (Chrome / Edge / Firefox)
