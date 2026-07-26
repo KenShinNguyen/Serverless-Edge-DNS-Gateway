@@ -85,6 +85,36 @@ Detailed rules:
 
 ---
 
+## 🧱 Layer 2: Cloudflare Gateway Security Filtering (CGPS)
+
+This project pairs naturally with [cloudflare-gateway-pihole-scripts (CGPS)](../../../cloudflare-gateway-pihole-scripts) in a **two-layer filtering architecture**, since the upstream (`UPSTREAM_PRIMARY`) is already a Cloudflare Gateway DoH endpoint:
+
+```
+Device ──DoH──▶ Pages Function (Layer 1: ads/tracking ~1M domains, ECS, redirects)
+                      │
+                      ▼
+            Cloudflare Gateway (Layer 2: CGPS-managed malware/phishing lists
+                      │          + built-in Zero Trust security categories)
+                      ▼
+                 Internet DNS
+```
+
+**Division of labor (avoids wasting the 300k-domain Gateway quota):**
+
+| Layer | Handles | Lists |
+| :--- | :--- | :--- |
+| Edge (this project) | Ads, tracking, gambling, telemetry | HaGeZi Pro++, AdGuard DNS, etc. (`update_lists.sh`) |
+| Gateway (CGPS) | Malware, phishing, scam (TIF) | HaGeZi TIF Mini (`.github/workflows/main.yml` in the CGPS repo) |
+
+**Setup notes:**
+
+*   Run the CGPS workflow against the **same Cloudflare account** that owns the Gateway endpoint configured in `UPSTREAM_PRIMARY` / `UPSTREAM_FALLBACK`.
+*   [rules/allowlists.txt](rules/allowlists.txt) is the **shared allowlist**: the Edge layer reads it directly, and the CGPS workflow pulls it via raw URL — add a domain once and it is unblocked on both layers.
+*   Additionally enable the built-in **Security Categories** (malware, phishing, new domains) in your Zero Trust Gateway policies — they are free and do not count against the 300k list quota.
+*   Keep the Gateway block response at its default (`0.0.0.0`). Do **not** use a block response of `127.0.0.1` — the Geo-Bypass logic treats loopback answers as geo-blocking and would re-resolve (unblock) them via Mullvad.
+
+---
+
 ## 📱 Setup Instructions
 
 ### Browsers (Chrome / Edge / Firefox)

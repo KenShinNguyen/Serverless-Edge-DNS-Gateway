@@ -33,7 +33,7 @@ https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/domains/pro.plus.txt \
 https://v.firebog.net/hosts/AdguardDNS.txt \
 https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/gambling-onlydomains.txt \
 https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/domains/native.winoffice.txt \
-https://github.com/mullvad/dns-blocklists/blob/main/output/doh/doh_privacy.txt \
+https://raw.githubusercontent.com/mullvad/dns-blocklists/main/output/doh/doh_privacy.txt \
 https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/domains/native.xiaomi.txt \
 https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/domains/native.apple.txt \
 | extract_domains > "$BLOCK_TMP"
