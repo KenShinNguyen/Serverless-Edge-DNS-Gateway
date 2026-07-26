@@ -1,11 +1,28 @@
 // ==================== CONFIG ====================
-const UPSTREAM_PRIMARY = 'https://o8xgn5d0fx.cloudflare-gateway.com/dns-query';
-const UPSTREAM_FALLBACK = 'https://o8xgn5d0fx.cloudflare-gateway.com/dns-query';
-const UPSTREAM_GEO_BYPASS = 'https://dns.mullvad.net/dns-query'; // Re-resolve without ECS when geo-block returns loopback
+// Upstreams are meant to be configured per-deployment via environment
+// variables (Cloudflare Pages > Settings > Environment variables):
+//   UPSTREAM_PRIMARY, UPSTREAM_FALLBACK, UPSTREAM_GEO_BYPASS
+// Never commit a personal Cloudflare Gateway URL here — this repo is public,
+// and anyone who forks it would route their DNS traffic through your account.
+// The defaults below are public resolvers so a fresh fork works out of the box.
+let UPSTREAM_PRIMARY = 'https://cloudflare-dns.com/dns-query';
+let UPSTREAM_FALLBACK = 'https://dns.google/dns-query';
+let UPSTREAM_GEO_BYPASS = 'https://dns.mullvad.net/dns-query'; // Re-resolve without ECS when geo-block returns loopback
 const UPSTREAM_TIMEOUT = 5000;
 
+// Optional access token (env: DOH_TOKEN). When set, every function route
+// requires the token as a path segment: /dns-query/<token>, /apple/<token>,
+// /debug/<token>. Untokened paths return 404. This is a lightweight abuse
+// barrier for the public endpoint, not full authentication.
+let DOH_TOKEN = '';
+
+// CORS origin (env: CORS_ORIGIN). Empty = no CORS headers (default).
+// Browser/OS native DoH does not need CORS; set to '*' only if you really
+// want arbitrary websites to be able to query this endpoint via JS.
+let CORS_ORIGIN = '';
+
 // Refresh interval for ALL lists (blocklist, allowlists, private TLDs, redirect rules)
-const ALL_LISTS_REFRESH_INTERVAL = 3600000; // 12 hour
+const ALL_LISTS_REFRESH_INTERVAL = 3600000; // 1 hour
 
 const AD_BLOCK_ENABLED = true;
 const BLOCKLIST_URL = '/rules/blocklists.txt';
@@ -33,8 +50,29 @@ const REDIRECT_RULES_URL = '/rules/redirect_rules.txt';
 const MULLVAD_UPSTREAM_ENABLED = true;
 const MULLVAD_UPSTREAM_URL = '/rules/mullvad_upstream.txt';
 
-// /debug endpoint — set to true only when needed, false by default to avoid unnecessary requests
-const DEBUG_ENABLED = false;
+// /debug endpoint — enable via env DEBUG_ENABLED=true only when needed
+let DEBUG_ENABLED = false;
+
+// Apply per-deployment overrides from Pages environment variables (once per isolate)
+let envApplied = false;
+function applyEnvConfig(env) {
+  if (envApplied || !env) return;
+  if (env.UPSTREAM_PRIMARY) UPSTREAM_PRIMARY = env.UPSTREAM_PRIMARY;
+  if (env.UPSTREAM_FALLBACK) UPSTREAM_FALLBACK = env.UPSTREAM_FALLBACK;
+  if (env.UPSTREAM_GEO_BYPASS) UPSTREAM_GEO_BYPASS = env.UPSTREAM_GEO_BYPASS;
+  if (env.DOH_TOKEN) DOH_TOKEN = env.DOH_TOKEN;
+  if (env.CORS_ORIGIN) CORS_ORIGIN = env.CORS_ORIGIN;
+  if (env.DEBUG_ENABLED === 'true') DEBUG_ENABLED = true;
+  envApplied = true;
+}
+
+// Constant-time-ish token comparison to avoid trivial timing probes
+function tokenMatches(provided, expected) {
+  if (!provided || provided.length !== expected.length) return false;
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) diff |= provided.charCodeAt(i) ^ expected.charCodeAt(i);
+  return diff === 0;
+}
 
 // Pre-compiled regex patterns for performance
 const IPV4_MAPPED_REGEX = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i;
@@ -722,7 +760,10 @@ async function ensureBlocklistsLoaded(url, context) {
 // ==================== HANDLERS ====================
 async function handleDNSQuery(request, context) {
   const clientIP = request.headers.get('CF-Connecting-IP') || 'unknown';
-  const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Accept' };
+  // CORS is opt-in (env CORS_ORIGIN); native browser/OS DoH never needs it
+  const cors = CORS_ORIGIN
+    ? { 'Access-Control-Allow-Origin': CORS_ORIGIN, 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Accept' }
+    : {};
 
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
 
@@ -817,11 +858,24 @@ async function handleDNSQuery(request, context) {
 
 // ==================== ROUTING ====================
 async function handleRequest(request, context) {
+  applyEnvConfig(context.env);
   const path = new URL(request.url).pathname;
+  const segments = path.split('/').filter(Boolean);
+  const route = segments[0] || '';
 
-  if (path === '/dns-query') return handleDNSQuery(request, context);
+  // When DOH_TOKEN is set, every route must be /<route>/<token>.
+  // Wrong or missing token → 404 (indistinguishable from unknown routes).
+  if (DOH_TOKEN) {
+    if (segments.length !== 2 || !tokenMatches(segments[1], DOH_TOKEN)) {
+      return new Response('Not Found', { status: 404 });
+    }
+  } else if (segments.length > 1) {
+    return new Response('Not Found', { status: 404 });
+  }
 
-  if (path === '/debug') {
+  if (route === 'dns-query') return handleDNSQuery(request, context);
+
+  if (route === 'debug') {
     if (!DEBUG_ENABLED) return new Response('Not Found', { status: 404 });
     if (AD_BLOCK_ENABLED || BLOCK_PRIVATE_TLD || DNS_REDIRECT_ENABLED) {
       await ensureBlocklistsLoaded(request.url, context);
@@ -837,9 +891,9 @@ async function handleRequest(request, context) {
     }, null, 2), { headers: { 'Content-Type': 'application/json' } });
   }
 
-  if (path === '/apple') {
+  if (route === 'apple') {
     const host = new URL(request.url).hostname;
-    const dohUrl = `https://${host}/dns-query`;
+    const dohUrl = `https://${host}/dns-query${DOH_TOKEN ? `/${DOH_TOKEN}` : ''}`;
     const uuid1 = crypto.randomUUID();
     const uuid2 = crypto.randomUUID();
     const uuid3 = crypto.randomUUID();

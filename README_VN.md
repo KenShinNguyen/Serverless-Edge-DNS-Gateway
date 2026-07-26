@@ -12,8 +12,9 @@ Dịch vụ DNS-over-HTTPS (DoH) bảo mật, hiệu năng cao, chạy trên h�
 *   **Chặn quảng cáo thông minh**: Tự động lọc quảng cáo tại Edge bằng các danh sách chuyên nghiệp (AdGuard, ABPVN, Bypass-VN...), được cập nhật tự động mỗi giờ.
 *   **Tối ưu hóa vị trí địa lý (ECS - RFC 7871)**: Tự động chèn EDNS Client Subnet (IPv4 `/24`, IPv6 `/48`) để đảm bảo các CDN (như Akamai, CloudFront, Fastly, BunnyCDN, Gcore) điều hướng bạn đến máy chủ gần nhất.
 *   **Độ tin cậy cao với hệ thống dự phòng**: 
-    *   **Primary/Fallback**: Tự động chuyển sang máy chủ Cloudflare Gateway dự phòng nếu máy chủ chính gặp sự cố.
+    *   **Primary/Fallback**: Tự động chuyển sang máy chủ dự phòng (*khác nhà cung cấp*) nếu máy chủ chính gặp sự cố.
     *   **Geo-Bypass**: Tự động phát hiện kết quả bị chặn địa lý (loopback 127.0.0.1) và phân giải lại qua **Mullvad DNS**.
+*   **Token bảo vệ endpoint (tuỳ chọn)**: Đặt biến môi trường `DOH_TOKEN` để yêu cầu `/dns-query/<token>`, tránh người lạ dùng chùa làm cạn hạn mức miễn phí của bạn.
 *   **Bộ lọc truy vấn sớm (Edge Filtering)**: Loại bỏ các truy vấn không cần thiết (`ANY`, `AAAA`, `PTR`, `HTTPS`) ngay tại Edge để tiết kiệm tài nguyên và tăng tốc độ phản hồi.
 *   **Lớp bảo vệ TLD nội bộ**: Ngăn rò rỉ các domain nội bộ (như `.local`, `.lan`, trang quản trị router) ra môi trường internet bằng cách trả về `NXDOMAIN` ngay lập tức.
 *   **Điều hướng DNS (CNAME Injection)**: Công cụ ép định tuyến domain A sang domain B bằng bản ghi CNAME. Giúp tùy chỉnh chính xác cụm máy chủ CDN mong muốn (Bilibili, TikTok, Medium...).
@@ -36,21 +37,26 @@ Dịch vụ DNS-over-HTTPS (DoH) bảo mật, hiệu năng cao, chạy trên h�
 
 ---
 
-## ⚙️ Cấu hình (`functions/[[path]].js`)
+## ⚙️ Cấu hình
 
-Các cài đặt chi tiết nằm ở phần đầu của file [functions/[[path]].js](functions/[[path]].js#L2-L30).
+Các cài đặt theo từng deployment (upstream, token, CORS) được đọc từ **biến môi trường** — vào Cloudflare Pages > **Settings > Environment variables** để thiết lập, sau đó redeploy. Các công tắc tính năng (adblock, ECS, lọc loại truy vấn) vẫn nằm ở đầu file [functions/[[path]].js](functions/[[path]].js).
 
-### Hệ thống phân giải (Resolvers)
-Các thông số dưới đây đã được cấu hình tối ưu sẵn theo mặc định.
+### Biến môi trường
+
+| Biến | Mặc định | Mô tả |
+| :--- | :--- | :--- |
+| `UPSTREAM_PRIMARY` | `https://cloudflare-dns.com/dns-query` | URL máy chủ phân giải chính. |
+| `UPSTREAM_FALLBACK` | `https://dns.google/dns-query` | Máy chủ dự phòng (nên dùng *nhà cung cấp khác* để failover có ý nghĩa thật sự). |
+| `UPSTREAM_GEO_BYPASS`| `https://dns.mullvad.net/dns-query` | Dùng khi máy chủ chính trả về loopback (127.0.0.1). |
+| `DOH_TOKEN` | *(trống)* | Token truy cập tuỳ chọn. Khi đặt, mọi endpoint yêu cầu token trong path: `/dns-query/<token>`, `/apple/<token>`, `/debug/<token>`. Path không có token trả về 404. |
+| `CORS_ORIGIN` | *(trống)* | Origin CORS tuỳ chọn. DoH gốc của trình duyệt/hệ điều hành **không** cần CORS; chỉ đặt `*` nếu bạn muốn website bên ngoài truy vấn endpoint qua JavaScript. |
+| `DEBUG_ENABLED` | *(trống)* | Đặt `true` để bật endpoint `/debug`. |
 
 > [!IMPORTANT]
-> Chỉ duy nhất **Cloudflare Gateway** mới đảm bảo trả về kết quả CDN chính xác nhất cho các dịch vụ như Akamai. Bạn có thể sử dụng UPSTREAM mặc định có sẵn, hoặc tự tạo [DNS locations](https://dash.cloudflare.com/?to=/:account/one/networks/resolvers-proxies) riêng trong tài khoản Cloudflare của mình.
+> Chỉ duy nhất **Cloudflare Gateway** mới đảm bảo trả về kết quả CDN chính xác nhất cho các dịch vụ như Akamai. Hãy tự tạo [DNS location](https://dash.cloudflare.com/?to=/:account/one/networks/resolvers-proxies) riêng trong tài khoản Cloudflare của bạn và đặt URL DoH của nó vào biến `UPSTREAM_PRIMARY`.
 
-| Hằng số | Mặc định | Mô tả |
-| :--- | :--- | :--- |
-| `UPSTREAM_PRIMARY` | Cloudflare Gateway | URL máy chủ phân giải chính. |
-| `UPSTREAM_FALLBACK` | Cloudflare Gateway | Máy chủ phân giải dự phòng. |
-| `UPSTREAM_GEO_BYPASS`| `dns.mullvad.net` | Dùng khi máy chủ chính trả về loopback (127.0.0.1). |
+> [!WARNING]
+> **Tuyệt đối không commit URL Gateway cá nhân vào repository.** Repo này công khai — ai fork về sẽ thừa hưởng upstream hardcode của bạn, khiến toàn bộ truy vấn DNS *của họ* đi qua tài khoản *của bạn* (đầy log Gateway và mọi lookup của họ bị gắn với tài khoản bạn). Nếu URL Gateway lỡ lọt vào git history, hãy xoay vòng: tạo DNS location mới, cập nhật biến môi trường `UPSTREAM_PRIMARY`, rồi xoá location cũ.
 
 ### Tối ưu hóa tại Edge
 | Hằng số | Mặc định | Mô tả |
@@ -70,9 +76,10 @@ Các quy tắc nằm trong thư mục `rules/`. Khi bạn thực hiện thay đ�
 
 Các quy tắc chi tiết:
 
-*   **`blocklists.txt`** / **`allowlists.txt`**: Được cập nhật tự động mỗi giờ.
-    *   **Cơ chế**: Nếu một domain nằm trong `allowlists.txt`, nó sẽ luôn được cho phép kể cả khi có tên trong `blocklists.txt` (giúp tránh việc chặn nhầm).
-    *   **Cách cấu hình**: Thay đổi các URL trong lệnh `curl` bên trong file [update_lists.sh](update_lists.sh#L34-L43) để thêm hoặc bớt các nguồn chặn/mở chặn.
+*   **`blocklists.txt`**: Được GitHub Actions cập nhật tự động mỗi giờ.
+    *   **Cách cấu hình**: Thay đổi các URL trong lệnh `curl` bên trong file [update_lists.sh](update_lists.sh) để thêm hoặc bớt các nguồn chặn.
+    *   **Chốt an toàn**: nếu tải lỗi khiến danh sách tụt xuống dưới 100.000 domain, script sẽ huỷ cập nhật và giữ nguyên danh sách cũ.
+*   **`allowlists.txt`**: Quản lý **thủ công** — mỗi dòng một domain. Domain trong đây luôn được cho phép kể cả khi có tên trong `blocklists.txt` (tránh chặn nhầm các domain quan trọng như ngân hàng, thanh toán).
 *   **`private_tlds.txt`**: Thêm các domain nội bộ hoặc URL router của riêng bạn vào đây.
 *   **`redirect_rules.txt`**: Điều hướng domain bằng cơ chế CNAME Injection (Domain A -> CNAME -> Domain B). Giúp tùy chỉnh CDN chính xác theo ý muốn.
     *   **Định dạng**: `domain-nguon domain-dich`
@@ -103,7 +110,10 @@ Các quy tắc chi tiết:
 | Endpoint | Mô tả |
 | :--- | :--- |
 | `/dns-query` | Endpoint để thực hiện truy vấn DoH. |
-| `/debug` | Trả về JSON tóm tắt cấu hình, thống kê và số lượng rule đang nạp. |
+| `/debug` | Trả về JSON tóm tắt cấu hình, thống kê và số lượng rule đang nạp (cần `DEBUG_ENABLED=true`). |
 | `/apple` | Tạo file cấu hình `.mobileconfig` cho các thiết bị Apple. |
+
+> [!NOTE]
+> Khi đã đặt `DOH_TOKEN`, thêm token vào mọi endpoint: `/dns-query/<token>`, `/debug/<token>`, `/apple/<token>`. File cấu hình Apple sinh ra sẽ tự động nhúng URL kèm token.
 
 ---

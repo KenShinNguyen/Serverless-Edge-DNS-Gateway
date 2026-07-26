@@ -16,8 +16,9 @@ A secure, high-performance DNS-over-HTTPS (DoH) proxy running on Cloudflare's gl
 *   **Smart Adblocking**: Local filtering using professional lists (AdGuard, ABPVN, Bypass-VN, etc.), automatically updated **every hour**.
 *   **ECS Geo-Optimization (RFC 7871)**: Injects EDNS Client Subnet (IPv4 `/24`, IPv6 `/48`) to ensure CDNs (Akamai, CloudFront, Fastly, BunnyCDN, Gcore) resolve you to the nearest servers.
 *   **Sequential Failover Reliability**: 
-    *   **Primary/Fallback**: Tries Cloudflare Gateway primary endpoint first, with automatic failover to a backup endpoint if it fails.
+    *   **Primary/Fallback**: Tries the primary upstream first, with automatic failover to a *different* backup resolver if it fails.
     *   **Geo-Bypass**: Automatically detects geo-blocked results (127.0.0.1) and re-resolves via **Mullvad DNS**.
+*   **Optional Access Token**: Set a `DOH_TOKEN` environment variable to require `/dns-query/<token>`, keeping strangers from burning your free-tier quota.
 *   **Early Response Filtering**: Drops unnecessary query types (`ANY`, `AAAA`, `PTR`, `HTTPS`) at the edge to save resources and improve speed.
 *   **Private TLD Shield**: Prevents local/internal domain leaks (e.g., `.local`, `.lan`, router logins) by returning `NXDOMAIN` instantly.
 *   **DNS Redirection (CNAME Injection)**: Redirects domain A to domain B using a CNAME record. This allows forcing a specific CDN chain or overriding resolution (e.g., Bilibili, TikTok, Medium).
@@ -40,21 +41,26 @@ A secure, high-performance DNS-over-HTTPS (DoH) proxy running on Cloudflare's gl
 
 ---
 
-## ⚙️ Configuration (`functions/[[path]].js`)
+## ⚙️ Configuration
 
-Detailed settings are managed at the top of the [functions/[[path]].js](functions/[[path]].js#L2-L30) file.
+Per-deployment settings (upstreams, access token, CORS) are read from **environment variables** — set them in Cloudflare Pages under **Settings > Environment variables**, then redeploy. Feature toggles (adblock, ECS, query-type filtering) remain at the top of [functions/[[path]].js](functions/[[path]].js).
 
-### Resolvers & Upstreams
-The parameters below are pre-configured with optimal defaults.
+### Environment Variables
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `UPSTREAM_PRIMARY` | `https://cloudflare-dns.com/dns-query` | Main resolver URL. |
+| `UPSTREAM_FALLBACK` | `https://dns.google/dns-query` | Backup resolver (use a *different* provider so failover actually helps). |
+| `UPSTREAM_GEO_BYPASS`| `https://dns.mullvad.net/dns-query` | Used when upstream returns loopback (127.0.0.1). |
+| `DOH_TOKEN` | *(empty)* | Optional access token. When set, all endpoints require it as a path segment: `/dns-query/<token>`, `/apple/<token>`, `/debug/<token>`. Untokened paths return 404. |
+| `CORS_ORIGIN` | *(empty)* | Optional CORS origin. Native browser/OS DoH does **not** need CORS; set `*` only if you want websites to query the endpoint via JavaScript. |
+| `DEBUG_ENABLED` | *(empty)* | Set `true` to enable the `/debug` endpoint. |
 
 > [!IMPORTANT]
-> Only **Cloudflare Gateway** ensures the most accurate CDN resolution for services like Akamai. You can use the default upstreams provided, or create your own [DNS locations](https://dash.cloudflare.com/?to=/:account/one/networks/resolvers-proxies) within your Cloudflare account.
+> Only **Cloudflare Gateway** ensures the most accurate CDN resolution for services like Akamai. Create your own [DNS location](https://dash.cloudflare.com/?to=/:account/one/networks/resolvers-proxies) in your Cloudflare account and set its DoH URL as `UPSTREAM_PRIMARY`.
 
-| Constant | Default | Description |
-| :--- | :--- | :--- |
-| `UPSTREAM_PRIMARY` | Cloudflare Gateway | Main resolver URL. |
-| `UPSTREAM_FALLBACK` | Cloudflare Gateway | Backup resolver. |
-| `UPSTREAM_GEO_BYPASS`| `dns.mullvad.net` | Used when upstream returns loopback (127.0.0.1). |
+> [!WARNING]
+> **Never commit your personal Gateway URL to the repository.** This repo is public — anyone who forks it inherits your hardcoded upstream, routing *their* DNS traffic through *your* account (it fills your Gateway logs and attributes their lookups to you). If a Gateway URL ever leaks into git history, rotate it: create a new DNS location, update the `UPSTREAM_PRIMARY` environment variable, and delete the old location.
 
 ### Edge Filtering (Optimization)
 | Constant | Default | Description |
@@ -74,9 +80,10 @@ Rules are located in the `rules/` folder. When you modify and commit these files
 
 Detailed rules:
 
-*   **`blocklists.txt`** / **`allowlists.txt`**: Automatically updated **every hour**.
-    *   **Logic**: Domains in `allowlists.txt` override `blocklists.txt`, ensuring they are never blocked even if flagged by a filter (prevents false positives).
-    *   **How to configure**: Edit the URLs in the `curl` command inside [update_lists.sh](update_lists.sh#L34-L43) to add or remove filtering sources.
+*   **`blocklists.txt`**: Automatically updated **every hour** by the GitHub Actions workflow.
+    *   **How to configure**: Edit the URLs in the `curl` command inside [update_lists.sh](update_lists.sh) to add or remove filtering sources.
+    *   **Safety guard**: if a download failure would shrink the list below 100,000 domains, the update aborts and the previous list is kept.
+*   **`allowlists.txt`**: Maintained **manually** — add one domain per line. Domains here override `blocklists.txt` and are never blocked even if flagged by a filter (prevents false positives on critical domains like banking or payment services).
 *   **`private_tlds.txt`**: Add your custom local domains or router URLs here.
 *   **`redirect_rules.txt`**: Redirects domain A to domain B using a CNAME record. Perfect for forcing specific CDN results.
     *   **Format**: `source-domain target-domain`
@@ -107,7 +114,10 @@ Detailed rules:
 | Endpoint | Description |
 | :--- | :--- |
 | `/dns-query` | The DoH resolver endpoint. |
-| `/debug` | Returns a JSON summary of config, stats, and rule counts. |
+| `/debug` | Returns a JSON summary of config, stats, and rule counts (requires `DEBUG_ENABLED=true`). |
 | `/apple` | Generates a native Apple `.mobileconfig` profile for iOS/macOS. |
+
+> [!NOTE]
+> When `DOH_TOKEN` is set, append it to every endpoint: `/dns-query/<token>`, `/debug/<token>`, `/apple/<token>`. The generated Apple profile automatically embeds the tokened URL.
 
 ---
