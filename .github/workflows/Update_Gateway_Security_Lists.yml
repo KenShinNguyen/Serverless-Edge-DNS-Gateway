@@ -52,10 +52,7 @@ env:
   # Dòng đầu: allowlist dùng chung với Lớp 1 (Serverless-Edge-DNS-Gateway).
   # Các dòng sau: chống chặn nhầm phổ biến của list bảo mật.
   DEFAULT_ALLOWLIST_URLS: |
-    https://raw.githubusercontent.com/KenShinNguyen/Serverless-Edge-DNS-Gateway/main/rules/allowlists.txt
     https://raw.githubusercontent.com/AdguardTeam/HttpsExclusions/master/exclusions/banks.txt
-    https://raw.githubusercontent.com/Dogino/Discord-Phishing-URLs/main/official-domains.txt
-    https://raw.githubusercontent.com/boutetnico/url-shorteners/master/list.txt
 
 jobs:
   cgps:
