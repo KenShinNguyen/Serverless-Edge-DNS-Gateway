@@ -1,0 +1,4 @@
+// Add a small /health endpoint and expose current mode/config summary
+// We'll only add minimal code so runtime behavior is backward compatible.
+
+// Patch: insert a route for '/health' returning 200 with JSON
