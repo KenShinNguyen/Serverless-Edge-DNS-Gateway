@@ -51,16 +51,3 @@ jobs:
           commit_message: "Auto-update: blocklists and allowlists"
           file_pattern: 'rules/*.txt'
           branch: ${{ github.ref }}
-
-      # Giai đoạn 7: health-check sau khi push — Cloudflare Pages tự động
-      # build+deploy khi thấy push mới trên nhánh này (không có bước deploy
-      # thủ công trong workflow). scripts/healthcheck.sh tự retry vài lần nếu
-      # deploy chưa kịp xong.
-      - name: Health check DoH endpoint
-        if: success()
-        run: |
-          chmod +x scripts/healthcheck.sh
-          scripts/healthcheck.sh
-        env:
-          HEALTHCHECK_ENDPOINT: ${{ vars.HEALTHCHECK_ENDPOINT || 'https://sedg.pages.dev' }}
-          DOH_TOKEN: ${{ secrets.DOH_TOKEN }}
