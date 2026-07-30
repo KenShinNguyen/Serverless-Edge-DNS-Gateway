@@ -2,49 +2,28 @@ name: Update DNS Blocklists
 
 on:
   schedule:
-    # Mỗi 3 giờ — đủ tươi cho list quảng cáo, tránh phình lịch sử git
-    # (mỗi commit là ~25MB blocklist)
     - cron: '0 */3 * * *'
   workflow_dispatch:
 
 permissions:
   contents: write
 
-# Chặn 2 lần chạy chồng nhau (ví dụ: workflow_dispatch thủ công trong lúc lịch
-# cron cũng đang chạy) — đây là nguyên nhân phổ biến nhất khiến bước "Commit
-# and Push changes" bị remote từ chối (non-fast-forward): 2 job cùng checkout
-# ở base commit giống nhau, job push sau bị đá vì main đã bị job kia đẩy lên
-# trước. cancel-in-progress: true huỷ job cũ, chỉ giữ lại lần chạy mới nhất —
-# an toàn vì mọi thứ chỉ tồn tại trên runner tạm, chưa từng commit dở dang.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   update-lists:
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    runs-on: ubuntu-24.04
 
-      # Giai đoạn 8: cache kết quả tải các nguồn chưa đổi giữa các lần chạy.
-      # Key chứa run_id nên luôn là key mới (bắt buộc để actions/cache lưu lại
-      # cache mới sau mỗi job) — restore-keys lấy cache gần nhất làm nền, nhờ
-      # đó scripts/download.sh (curl -z) có thể bỏ qua tải lại nguồn không đổi.
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Run update script
         run: |
           chmod +x update_lists.sh
           ./update_lists.sh
 
-      - name: Commit and Push changes
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "Auto-update: blocklists and allowlists"
-          file_pattern: 
-            'rules/*.txt'
-          branch: ${{ github.ref }}
       - name: Check for changes
         id: changes
         run: |
@@ -53,5 +32,12 @@ jobs:
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
-      - name: Commit
-          if: steps.changes.outputs.changed == 'true'
+
+      - name: Commit and Push changes
+        if: steps.changes.outputs.changed == 'true'
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Auto-update: blocklists and allowlists"
+          file_pattern: |
+            rules/*.txt
+          branch: ${{ github.ref_name }}
