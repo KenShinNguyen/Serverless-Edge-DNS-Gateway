@@ -10,6 +10,16 @@ on:
 permissions:
   contents: write
 
+# Chặn 2 lần chạy chồng nhau (ví dụ: workflow_dispatch thủ công trong lúc lịch
+# cron cũng đang chạy) — đây là nguyên nhân phổ biến nhất khiến bước "Commit
+# and Push changes" bị remote từ chối (non-fast-forward): 2 job cùng checkout
+# ở base commit giống nhau, job push sau bị đá vì main đã bị job kia đẩy lên
+# trước. cancel-in-progress: true huỷ job cũ, chỉ giữ lại lần chạy mới nhất —
+# an toàn vì mọi thứ chỉ tồn tại trên runner tạm, chưa từng commit dở dang.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   update-lists:
     runs-on: ubuntu-latest
@@ -18,9 +28,21 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Giai đoạn 8: cache kết quả tải các nguồn chưa đổi giữa các lần chạy.
+      # Key chứa run_id nên luôn là key mới (bắt buộc để actions/cache lưu lại
+      # cache mới sau mỗi job) — restore-keys lấy cache gần nhất làm nền, nhờ
+      # đó scripts/download.sh (curl -z) có thể bỏ qua tải lại nguồn không đổi.
+      - name: Restore blocklist download cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/blocklists
+          key: blocklist-cache-${{ github.run_id }}
+          restore-keys: |
+            blocklist-cache-
+
       - name: Run update script
         run: |
-          chmod +x update_lists.sh
+          chmod +x update_lists.sh scripts/*.sh
           ./update_lists.sh
 
       - name: Commit and Push changes
@@ -29,3 +51,16 @@ jobs:
           commit_message: "Auto-update: blocklists and allowlists"
           file_pattern: 'rules/*.txt'
           branch: ${{ github.ref }}
+
+      # Giai đoạn 7: health-check sau khi push — Cloudflare Pages tự động
+      # build+deploy khi thấy push mới trên nhánh này (không có bước deploy
+      # thủ công trong workflow). scripts/healthcheck.sh tự retry vài lần nếu
+      # deploy chưa kịp xong.
+      - name: Health check DoH endpoint
+        if: success()
+        run: |
+          chmod +x scripts/healthcheck.sh
+          scripts/healthcheck.sh
+        env:
+          HEALTHCHECK_ENDPOINT: ${{ vars.HEALTHCHECK_ENDPOINT || 'https://sedg.pages.dev' }}
+          DOH_TOKEN: ${{ secrets.DOH_TOKEN }}
