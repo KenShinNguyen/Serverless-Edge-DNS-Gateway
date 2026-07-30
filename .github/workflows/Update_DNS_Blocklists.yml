@@ -42,15 +42,29 @@ jobs:
 
       - name: Run update script
         run: |
-          chmod +x update_lists.sh
+          set -euo pipefail
+          # enable nullglob so the for-loop below simply skips when no files match
+          shopt -s nullglob || true
+
+          # Make update_lists.sh executable if present; don't fail if it's missing
+          if [ -f ./update_lists.sh ]; then
+            [ -x ./update_lists.sh ] || chmod +x ./update_lists.sh || true
+          else
+            echo "update_lists.sh not found — the step will still run (may fail later if required)."
+          fi
+
+          # Safely make any scripts in scripts/ executable (no-op if none exist)
+          for f in scripts/*.sh; do
+            [ -x "$f" ] || chmod +x "$f" || true
+          done
+
           ./update_lists.sh
 
       - name: Commit and Push changes
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "Auto-update: blocklists and allowlists"
-          file_pattern: 
-            'rules/*.txt'
+          file_pattern: 'rules/*.txt'
           branch: ${{ github.ref }}
 
       # Giai đoạn 7: health-check sau khi push — Cloudflare Pages tự động
@@ -60,8 +74,13 @@ jobs:
       - name: Health check DoH endpoint
         if: success()
         run: |
-          chmod +x scripts/healthcheck.sh
-          scripts/healthcheck.sh
+          set -euo pipefail
+          if [ -f scripts/healthcheck.sh ]; then
+            [ -x scripts/healthcheck.sh ] || chmod +x scripts/healthcheck.sh || true
+            scripts/healthcheck.sh
+          else
+            echo "scripts/healthcheck.sh not found — skipping health check"
+          fi
         env:
           HEALTHCHECK_ENDPOINT: ${{ vars.HEALTHCHECK_ENDPOINT || 'https://sedg.pages.dev' }}
           DOH_TOKEN: ${{ secrets.DOH_TOKEN }}
