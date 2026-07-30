@@ -32,13 +32,6 @@ jobs:
       # Key chứa run_id nên luôn là key mới (bắt buộc để actions/cache lưu lại
       # cache mới sau mỗi job) — restore-keys lấy cache gần nhất làm nền, nhờ
       # đó scripts/download.sh (curl -z) có thể bỏ qua tải lại nguồn không đổi.
-      - name: Restore blocklist download cache
-        uses: actions/cache@v4
-        with:
-          path: .cache/blocklists
-          key: blocklist-cache-${{ github.run_id }}
-          restore-keys: |
-            blocklist-cache-
 
       - name: Run update script
         run: |
@@ -49,5 +42,16 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "Auto-update: blocklists and allowlists"
-          file_pattern: 'rules/*.txt'
+          file_pattern: 
+            'rules/*.txt'
           branch: ${{ github.ref }}
+      - name: Check for changes
+        id: changes
+        run: |
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Commit
+          if: steps.changes.outputs.changed == 'true'
