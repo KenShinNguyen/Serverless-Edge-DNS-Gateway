@@ -4,6 +4,10 @@ on:
   schedule:
     - cron: '0 20 * * *'
 
+# Cấp quyền cho GITHUB_TOKEN để xóa workflow runs
+permissions:
+  actions: write
+
 jobs:
   del_runs:
     runs-on: ubuntu-latest
@@ -11,7 +15,7 @@ jobs:
       - name: Delete Workflow Runs
         uses: Mattraks/delete-workflow-runs@v2
         with:
-          token: ${{ github.token }}
+          token: ${{ secrets.GITHUB_TOKEN }}
           repository: ${{ github.repository }}
           retain_days: 1
           keep_minimum_runs: 0
