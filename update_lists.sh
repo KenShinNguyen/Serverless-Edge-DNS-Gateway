@@ -168,3 +168,4 @@ echo "📌 Final count: $FINAL_COUNT unique domains"
 if [ "$REMOVED" -gt 0 ]; then
   echo "🔄 Removed $REMOVED duplicates"
 fi
+fix: tăng timeout + dùng mirror GitHub cho blocklist`
