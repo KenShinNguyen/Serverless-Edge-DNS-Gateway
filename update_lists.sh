@@ -82,7 +82,7 @@ declare -a URLS=(
   "https://v.firebog.net/hosts/AdguardDNS.txt"
   "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/popupads-onlydomains.txt"
   "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/gambling-onlydomains.txt"
-  "https://github.com/mullvad/dns-blocklists/blob/main/output/doh/doh_privacy.txt"
+  "https://raw.githubusercontent.com/mullvad/dns-blocklists/refs/heads/main/output/doh/doh_gambling.txt"
   "https://raw.githubusercontent.com/mullvad/dns-blocklists/main/output/doh/doh_privacy.txt"
   "https://urlhaus.abuse.ch/downloads/hostfile"
 )
