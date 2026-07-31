@@ -76,18 +76,14 @@ echo ""
 
 # Danh sách URLs (thêm/xóa URL tại đây). Có thể thêm mirror GitHub/raw.githubusercontent để dự phòng.
 declare -a URLS=(
-  "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/domains/pro.txt"
   "https://raw.githubusercontent.com/mullvad/dns-blocklists/refs/heads/main/output/doh/doh_adblock.txt"
-  "https://big.oisd.nl/rpz"
+  "https://big.oisd.nl/domainswild2"
+  "https://v.firebog.net/hosts/Easyprivacy.txt"
   "https://v.firebog.net/hosts/AdguardDNS.txt"
   "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/popupads-onlydomains.txt"
   "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/gambling-onlydomains.txt"
-  "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/gambling.txt"
-  "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/domains/native.winoffice.txt"
+  "https://github.com/mullvad/dns-blocklists/blob/main/output/doh/doh_privacy.txt"
   "https://raw.githubusercontent.com/mullvad/dns-blocklists/main/output/doh/doh_privacy.txt"
-  "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/domains/native.xiaomi.txt"
-  "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/domains/native.apple.txt"
-  "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/rpz/tif.mini.txt"
   "https://urlhaus.abuse.ch/downloads/hostfile"
 )
 
