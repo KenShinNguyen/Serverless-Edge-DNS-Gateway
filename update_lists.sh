@@ -82,6 +82,7 @@ declare -a URLS=(
   "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/popupads-onlydomains.txt"
   "https://raw.githubusercontent.com/mullvad/dns-blocklists/refs/heads/main/output/doh/doh_gambling.txt"
   "https://raw.githubusercontent.com/mullvad/dns-blocklists/main/output/doh/doh_privacy.txt"
+  "https://abpvn.com/filter/abpvn-3qgDm6.txt"
   "https://urlhaus.abuse.ch/downloads/hostfile"
 )
 
