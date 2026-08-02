@@ -112,11 +112,16 @@ Thiết bị ──DoH──▶ Pages Function (Lớp 1: quảng cáo/tracking ~
 | Edge (project này) | Quảng cáo, tracking, cờ bạc, telemetry | HaGeZi Pro++, AdGuard DNS,... (`update_lists.sh`) |
 | Gateway (CGPS) | Malware, phishing, lừa đảo (TIF) | HaGeZi TIF Mini ([.github/workflows/Update_Gateway_Security_Lists.yml](.github/workflows/Update_Gateway_Security_Lists.yml)) |
 
+> [!WARNING]
+> **Đừng bật workflow này nếu bạn đã chạy CGPS ở nơi khác trên cùng tài khoản Cloudflare** — ví dụ một repo `cloudflare-gateway-pihole-scripts` riêng đang đẩy list quảng cáo lên Gateway. CGPS đặt tên list cố định (`CGPS List - Chunk N`) và dùng chung một rule (`CGPS Filter Lists`), nên hai bản CGPS trên cùng tài khoản sẽ ghi đè lẫn nhau: bên chạy sau chiếm các chunk đầu. Không có cơ chế namespace nào tách được hai bộ list. Mà quota 300.000 item của gói Free cũng không đủ: list quảng cáo ~298k cộng TIF ~170k là 468k, vượt trần.
+>
+> Trong trường hợp đó, hãy lấy malware/phishing từ **Security Categories** có sẵn: miễn phí, do Cloudflare tự cập nhật, và không tính vào quota 300k. Workflow này chỉ hợp lý khi Gateway của bạn dành riêng cho bảo mật, còn quảng cáo do lớp 1 lo hết tại edge.
+
 **Lưu ý khi thiết lập:**
 
-*   Workflow lớp 2 nằm **ngay trong repo này** (lúc chạy nó checkout code CGPS từ `mrrfv/cloudflare-gateway-pihole-scripts@v1`, nên không cần repo riêng). Bật workflow trong tab **Actions** và tạo 2 secrets cho repo: `CLOUDFLARE_API_TOKEN` (quyền đọc/sửa Zero Trust) và `CLOUDFLARE_ACCOUNT_ID`.
+*   Workflow lớp 2 nằm **ngay trong repo này** (lúc chạy nó checkout code CGPS từ `mrrfv/cloudflare-gateway-pihole-scripts@v1`, nên không cần repo riêng). Workflow **chỉ chạy thủ công** (`workflow_dispatch`) — cố ý không có lịch tự động để nó không thể âm thầm ghi đè list của một bản CGPS khác. Muốn chạy cần 2 secrets: `CLOUDFLARE_API_TOKEN` (quyền đọc/sửa Zero Trust) và `CLOUDFLARE_ACCOUNT_ID`.
 *   Dùng **đúng tài khoản Cloudflare** sở hữu endpoint Gateway đã khai trong `UPSTREAM_PRIMARY` / `UPSTREAM_FALLBACK`.
-*   [rules/allowlists.txt](rules/allowlists.txt) là **allowlist dùng chung**: lớp Edge đọc trực tiếp, workflow lớp 2 kéo đúng file đó qua raw URL nên 2 lớp cùng mở chặn một tập domain. File này do workflow lớp 1 sinh lại mỗi lần chạy, nên muốn thêm domain lâu dài thì thêm vào nguồn allowlist của workflow đó chứ không sửa trực tiếp file. Do lớp 1 commit bằng `GITHUB_TOKEN` (GitHub cố tình không cho push bằng token này kích hoạt workflow khác), lớp 2 nhận allowlist mới ở lần chạy theo lịch hằng ngày chứ không ngay lập tức.
+*   [rules/allowlists.txt](rules/allowlists.txt) là **allowlist dùng chung**: lớp Edge đọc trực tiếp, workflow lớp 2 kéo đúng file đó qua raw URL nên 2 lớp cùng mở chặn một tập domain. File này do workflow lớp 1 sinh lại mỗi lần chạy, nên muốn thêm domain lâu dài thì thêm vào nguồn allowlist của workflow đó chứ không sửa trực tiếp file. Lớp 2 nhận allowlist mới ở lần bạn chạy nó thủ công kế tiếp.
 *   Workflow **fail rõ ràng nếu nguồn list hỏng**. Bộ tải của CGPS không kiểm tra HTTP status — URL 404 vẫn tạo file rỗng rồi báo thành công — nên có thêm bước kiểm tra: dừng job nếu blocklist dưới 50.000 domain (đổi được bằng Actions variable `MIN_BLOCK_DOMAINS`).
 *   Nên bật thêm các **Security Category có sẵn** (malware, phishing, new domains) trong Gateway policy của Zero Trust — hoàn toàn miễn phí và không tính vào quota 300k.
 *   Giữ nguyên kiểu chặn mặc định của Gateway (trả về `0.0.0.0`). **Không** dùng kiểu chặn trả về `127.0.0.1` — logic Geo-Bypass sẽ coi đó là geo-block và re-resolve qua Mullvad, vô tình mở chặn domain đó.

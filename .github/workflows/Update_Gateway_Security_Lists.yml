@@ -1,44 +1,42 @@
 # ============================================================================
-# Lớp 2 (Cloudflare Gateway) trong kiến trúc lọc DNS 2 lớp:
+# Lớp 2 (Cloudflare Gateway) — đẩy list bảo mật HaGeZi TIF vào Zero Trust.
 #
 #   Thiết bị ──DoH──▶ Serverless-Edge-DNS-Gateway (Lớp 1: quảng cáo/tracking)
 #                            │
 #                            ▼
 #                  Cloudflare Gateway (Lớp 2: workflow này — malware/phishing)
 #
-# - Lớp 1 đã chặn quảng cáo/tracking bằng list lớn (~1M domain) ngay tại edge,
-#   nên lớp này CHỈ đẩy list bảo mật (HaGeZi TIF) vào Gateway để không lãng
-#   phí quota 300k domain của gói Zero Trust Free.
-# - Workflow chạy code CGPS (mrrfv/cloudflare-gateway-pihole-scripts@v1) nên
-#   đặt được ngay trong repo này — không cần repo riêng.
-# - Allowlist được đồng bộ với Lớp 1: kéo rules/allowlists.txt của repo này
-#   qua raw URL.
-# - Chạy hằng ngày (domain phishing/malware thay đổi nhanh hơn list quảng cáo).
-# - Có thể override bằng GitHub Actions Variables: BLOCKLIST_URLS /
-#   ALLOWLIST_URLS (mỗi dòng 1 URL).
+# ⚠️ WORKFLOW NÀY CHỈ CHẠY THỦ CÔNG (workflow_dispatch). ĐỌC KỸ TRƯỚC KHI BẬT
+# LẠI LỊCH TỰ ĐỘNG.
+#
+# Lý do: nó chạy CGPS, mà CGPS đặt tên list cố định là "CGPS List - Chunk N"
+# và dùng chung một rule tên "CGPS Filter Lists". Nếu bạn còn một chỗ khác
+# cũng chạy CGPS trên CÙNG tài khoản Cloudflare (ví dụ repo
+# cloudflare-gateway-pihole-scripts riêng để chặn quảng cáo), hai bên sẽ ghi
+# đè lẫn nhau: bên chạy sau chiếm các chunk đầu, bên chạy trước mất phần đó.
+# CGPS không có cơ chế namespace để tách hai bộ list.
+#
+# Ngoài ra quota gói Free chỉ có 300.000 item: một bộ list quảng cáo cỡ
+# ~298k domain cộng TIF ~170k là 468k — vượt trần, không thể cùng tồn tại.
+#
+# Nếu bạn đã dùng Gateway để chặn quảng cáo, ĐỪNG bật workflow này. Hãy lấy
+# malware/phishing từ Security Categories có sẵn của Zero Trust: miễn phí,
+# do Cloudflare tự cập nhật và KHÔNG tính vào quota 300k. Xem README, mục
+# "Lớp 2".
+#
+# Workflow này chỉ hợp lý khi Gateway của bạn dành riêng cho bảo mật (lớp 1
+# đã lo toàn bộ quảng cáo tại edge với ~1M domain).
 #
 # Secrets bắt buộc: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID
-# (phải là tài khoản sở hữu endpoint Gateway khai trong UPSTREAM_PRIMARY
-# của functions/[[path]].js).
+# (phải là tài khoản sở hữu endpoint Gateway khai trong UPSTREAM_PRIMARY).
 # Secrets tùy chọn: CLOUDFLARE_LIST_ITEM_LIMIT, DISCORD_WEBHOOK_URL, PING_URL
+# Có thể override nguồn bằng Actions Variables: BLOCKLIST_URLS/ALLOWLIST_URLS.
 # ============================================================================
 name: Update Filter Lists
 
+# CỐ Ý không có `schedule` và `push`: xem cảnh báo ở đầu file. Chỉ bật lại khi
+# chắc chắn không có nơi nào khác chạy CGPS trên cùng tài khoản Cloudflare.
 on:
-  schedule:
-    - cron: "0 3 * * *"
-  push:
-    branches:
-      - main
-    paths:
-      # Chỉ chạy khi đổi cấu hình lớp 2 hoặc allowlist dùng chung.
-      # Lưu ý: commit tự động của workflow lớp 1 dùng GITHUB_TOKEN, mà GitHub
-      # cố tình KHÔNG cho push bằng token đó kích hoạt workflow khác (chống đệ
-      # quy) — nên allowlist do lớp 1 sinh ra không làm workflow này chạy ngay;
-      # nó được đồng bộ ở lần chạy theo lịch hằng ngày. Trigger này chỉ có tác
-      # dụng với push của người thật hoặc merge PR.
-      - ".github/workflows/Update_Gateway_Security_Lists.yml"
-      - "rules/allowlists.txt"
   workflow_dispatch:
 
 # Group cố định theo tên file, KHÔNG dùng ${{ github.workflow }}: biến đó trả
@@ -162,10 +160,6 @@ jobs:
         env:
           PING_URL: ${{ secrets.PING_URL }}
 
-  keepalive:
-    if: github.event_name == 'schedule'
-    runs-on: ubuntu-latest
-    permissions:
-      actions: write
-    steps:
-      - uses: liskin/gh-workflow-keepalive@v1
+  # Job keepalive đã bỏ: nó chỉ có tác dụng với workflow chạy theo `schedule`
+  # (GitHub tự tắt lịch của repo im ắng 60 ngày), mà workflow này nay chỉ chạy
+  # thủ công.
