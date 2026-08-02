@@ -79,7 +79,9 @@ Các quy tắc chi tiết:
 *   **`blocklists.txt`**: Được GitHub Actions cập nhật tự động mỗi 3 giờ.
     *   **Cách cấu hình**: Thay đổi các URL trong lệnh `curl` bên trong file [update_lists.sh](update_lists.sh) để thêm hoặc bớt các nguồn chặn.
     *   **Chốt an toàn**: script huỷ cập nhật và giữ nguyên danh sách cũ nếu lỗi tải khiến danh sách tụt dưới 50.000 domain (đổi được bằng biến môi trường `MIN_DOMAINS`), hoặc nếu quá nửa số nguồn thất bại.
-*   **`allowlists.txt`**: Quản lý **thủ công** — mỗi dòng một domain. Domain trong đây luôn được cho phép kể cả khi có tên trong `blocklists.txt` (tránh chặn nhầm các domain quan trọng như ngân hàng, thanh toán).
+*   **`allowlists.txt`**: Do chính workflow sinh ra, từ hai nguồn: các list exclusion/exception của AdGuard, và toàn bộ rule ngoại lệ `@@` tìm thấy trong chính các nguồn blocklist. Domain ở đây được ưu tiên hơn `blocklists.txt` và bị trừ khỏi blocklist ngay lúc build, nên một domain không thể nằm ở cả hai list.
+    *   **Vì sao `@@` quan trọng**: trong cú pháp AdBlock, `@@||example.com^` nghĩa là *đừng chặn* `example.com`. Nếu đưa thẳng rule đó vào blocklist thì đúng những domain mà tác giả filter cố ý mở chặn lại bị chặn — nên ngoại lệ được tách sang allowlist.
+    *   **Lưu ý**: file này bị ghi đè mỗi lần chạy — muốn thêm domain lâu dài thì thêm vào nguồn filter, hoặc thêm lại sau mỗi lần chạy.
 *   **`private_tlds.txt`**: Thêm các domain nội bộ hoặc URL router của riêng bạn vào đây.
 *   **`redirect_rules.txt`**: Điều hướng domain bằng cơ chế CNAME Injection (Domain A -> CNAME -> Domain B). Giúp tùy chỉnh CDN chính xác theo ý muốn.
     *   **Định dạng**: `domain-nguon domain-dich`

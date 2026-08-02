@@ -17,16 +17,20 @@ STATS_FILE=$(mktemp)
 LAST_CURL_EXIT=$(mktemp)
 
 # Cleanup khi script exit (không gọi exit trong trap)
-trap 'rm -f "$BLOCK_TMP" "$ALLOW_TMP" "$STATS_FILE" "$LAST_CURL_EXIT"' INT TERM EXIT
+trap 'rm -f "$BLOCK_TMP" "$BLOCK_TMP.sorted" "$ALLOW_TMP" "$STATS_FILE" "$LAST_CURL_EXIT"' INT TERM EXIT
 
 # ============================================================================
-# Extract domains từ các định dạng khác nhau (adblock, hosts, plain domains)
+# Chuẩn hoá một dòng filter thành domain trần (adblock, hosts, plain domains).
+#
+# KHÔNG xử lý tiền tố "@@" ở đây: trong cú pháp AdBlock, "@@||example.com^" là
+# rule NGOẠI LỆ ("đừng chặn example.com"). Nếu chỉ cắt bỏ "@@" rồi trộn chung,
+# mọi domain mà tác giả filter cố ý mở chặn sẽ bị đẩy ngược vào blocklist.
+# Việc tách @@ do extract_block_domains / extract_allow_domains đảm nhiệm.
 # ============================================================================
-extract_domains() {
+normalize_domains() {
   awk '{
     if (/^[[:space:]]*$/ || /^[!#]/) next
     line = tolower($0)
-    sub(/^@@\|\|?/, "", line)
     sub(/^\|\|?/, "", line)
     sub(/\^.*/, "", line)
     sub(/[#!].*/, "", line)
@@ -36,6 +40,21 @@ extract_domains() {
     gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
     if (line ~ /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/ && !seen[line]++) print line
   }'
+}
+
+# Từ một nguồn filter: lấy các domain BỊ CHẶN (bỏ qua rule ngoại lệ @@).
+extract_block_domains() {
+  { grep -v '^[[:space:]]*@@' || true; } | normalize_domains
+}
+
+# Từ một nguồn filter: lấy các domain ĐƯỢC MỞ CHẶN (chỉ rule ngoại lệ @@).
+extract_allow_domains() {
+  { grep '^[[:space:]]*@@' || true; } | sed 's/^[[:space:]]*@@//' | normalize_domains
+}
+
+# Nguồn allowlist thuần: chấp nhận cả domain trần lẫn rule @@.
+extract_any_domains() {
+  sed 's/^[[:space:]]*@@//' | normalize_domains
 }
 
 # ============================================================================
@@ -89,13 +108,17 @@ declare -a BLOCK_URLS=(
   "https://abpvn.com/filter/abpvn-3qgDm6.txt"
 )
 
-# Khởi tạo file tmp và stats
+# Khởi tạo file tmp và stats. ALLOW_TMP khởi tạo ngay tại đây (không phải ở
+# phần allowlist bên dưới) vì các rule ngoại lệ @@ thu được từ chính nguồn
+# blocklist sẽ được ghi dồn vào đó.
 : > "$BLOCK_TMP"
+: > "$ALLOW_TMP"
 : > "$STATS_FILE"
 
 TOTAL_BLOCK_DOMAINS=0
 BLOCK_SUCCESS_COUNT=0
 BLOCK_FAILED_COUNT=0
+EXCEPTIONS_FOUND=0
 TOTAL_BLOCK_URLS=${#BLOCK_URLS[@]}
 
 # MIN_DOMAINS có thể override bằng biến môi trường
@@ -108,8 +131,15 @@ for url in "${BLOCK_URLS[@]}"; do
   DL_TMP=$(mktemp)
   if download_list "$url" > "$DL_TMP"; then
     # Extract và đếm domains từ source này (stream từ file tạm)
-    domain_count=$(extract_domains < "$DL_TMP" | tee -a "$BLOCK_TMP" | wc -l)
-    echo "   ✅ Success: $domain_count domains" | tee -a "$STATS_FILE"
+    domain_count=$(extract_block_domains < "$DL_TMP" | tee -a "$BLOCK_TMP" | wc -l)
+    # Rule ngoại lệ (@@) của chính nguồn này → allowlist, KHÔNG phải blocklist
+    exc_count=$(extract_allow_domains < "$DL_TMP" | tee -a "$ALLOW_TMP" | wc -l)
+    if [ "$exc_count" -gt 0 ]; then
+      echo "   ✅ Success: $domain_count domains (+$exc_count ngoại lệ → allowlist)" | tee -a "$STATS_FILE"
+    else
+      echo "   ✅ Success: $domain_count domains" | tee -a "$STATS_FILE"
+    fi
+    EXCEPTIONS_FOUND=$((EXCEPTIONS_FOUND + exc_count))
     BLOCK_SUCCESS_COUNT=$((BLOCK_SUCCESS_COUNT + 1))
     TOTAL_BLOCK_DOMAINS=$((TOTAL_BLOCK_DOMAINS + domain_count))
   else
@@ -153,16 +183,20 @@ fi
 
 echo ""
 echo "🧹 Removing duplicates and sorting blocklists..."
-# Use LC_ALL=C for consistent, faster sorting
-LC_ALL=C sort -u "$BLOCK_TMP" -o "$BLOCK_OUT"
+# Use LC_ALL=C for consistent, faster sorting.
+# Ghi ra file tạm: blocklist chỉ được chốt sau khi có allowlist đầy đủ, để
+# còn trừ đi phần allowlist (xem bước "Chốt blocklist" ở cuối script).
+LC_ALL=C sort -u "$BLOCK_TMP" -o "$BLOCK_TMP.sorted"
 
-FINAL_BLOCK_COUNT=$(wc -l < "$BLOCK_OUT")
-REMOVED=$((TOTAL_BLOCK_DOMAINS - FINAL_BLOCK_COUNT))
+DEDUPED_BLOCK_COUNT=$(wc -l < "$BLOCK_TMP.sorted")
+REMOVED=$((TOTAL_BLOCK_DOMAINS - DEDUPED_BLOCK_COUNT))
 
-echo "✅ Done! Blocklist saved to $BLOCK_OUT"
-echo "📌 Final count: $FINAL_BLOCK_COUNT unique domains"
+echo "📌 Sau khi khử trùng lặp: $DEDUPED_BLOCK_COUNT domain"
 if [ "$REMOVED" -gt 0 ]; then
   echo "🔄 Removed $REMOVED duplicates"
+fi
+if [ "$EXCEPTIONS_FOUND" -gt 0 ]; then
+  echo "🔓 Thu được $EXCEPTIONS_FOUND rule ngoại lệ (@@) từ nguồn blocklist → allowlist"
 fi
 
 # ============================================================================
@@ -178,8 +212,8 @@ declare -a ALLOW_URLS=(
   "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/whitelist/whitelist-onlydomains.txt"
 )
 
-# Khởi tạo file tmp allowlist
-: > "$ALLOW_TMP"
+# KHÔNG reset ALLOW_TMP ở đây: nó đang giữ các rule ngoại lệ @@ thu được từ
+# nguồn blocklist bên trên. Chỉ reset bảng thống kê.
 : > "$STATS_FILE"
 
 TOTAL_ALLOW_DOMAINS=0
@@ -196,7 +230,7 @@ for url in "${ALLOW_URLS[@]}"; do
   DL_TMP=$(mktemp)
   if download_list "$url" > "$DL_TMP"; then
     # Extract và đếm domains từ source này
-    domain_count=$(extract_domains < "$DL_TMP" | tee -a "$ALLOW_TMP" | wc -l)
+    domain_count=$(extract_any_domains < "$DL_TMP" | tee -a "$ALLOW_TMP" | wc -l)
     echo "   ✅ Success: $domain_count domains" | tee -a "$STATS_FILE"
     ALLOW_SUCCESS_COUNT=$((ALLOW_SUCCESS_COUNT + 1))
     TOTAL_ALLOW_DOMAINS=$((TOTAL_ALLOW_DOMAINS + domain_count))
@@ -242,6 +276,27 @@ echo "✅ Done! Allowlist saved to $ALLOW_OUT"
 echo "📌 Final count: $FINAL_ALLOW_COUNT unique domains"
 if [ "$ALLOW_REMOVED" -gt 0 ]; then
   echo "🔄 Removed $ALLOW_REMOVED duplicates"
+fi
+
+# ============================================================================
+# Chốt blocklist: loại bỏ mọi domain có trong allowlist
+#
+# Edge function vốn đã ưu tiên allowlist khi tra cứu, nên bước này không đổi
+# hành vi lọc — nó chỉ khiến dữ liệu tự nhất quán (một domain không thể vừa
+# bị chặn vừa được mở) và giảm số phần tử phải nạp vào RAM của Pages Function.
+# ============================================================================
+echo ""
+echo "🧹 Loại bỏ domain nằm trong allowlist khỏi blocklist..."
+LC_ALL=C comm -23 "$BLOCK_TMP.sorted" "$ALLOW_OUT" > "$BLOCK_OUT"
+rm -f "$BLOCK_TMP.sorted"
+
+FINAL_BLOCK_COUNT=$(wc -l < "$BLOCK_OUT")
+OVERLAP=$((DEDUPED_BLOCK_COUNT - FINAL_BLOCK_COUNT))
+
+echo "✅ Done! Blocklist saved to $BLOCK_OUT"
+echo "📌 Final count: $FINAL_BLOCK_COUNT unique domains"
+if [ "$OVERLAP" -gt 0 ]; then
+  echo "🔓 Gỡ chặn $OVERLAP domain vì có trong allowlist"
 fi
 
 # ============================================================================
