@@ -199,7 +199,6 @@ andebu-sparebank.no
 android.clients.google.com
 androidpay-users-pa.googleapis.com
 anexia-it.com
-anime47.best
 anonaddy.com
 anrdoezrs.net
 anura.io
@@ -711,7 +710,6 @@ ccservicing.com
 cd.connatix.com
 cdm24.pl
 cdn-secuchart.com
-cdn.adxcontent.com
 cdn.atmedia.hu
 cdn.cloudflare.net
 cdn.duurzaam.greenchoice.nl
