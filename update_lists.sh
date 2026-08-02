@@ -207,10 +207,29 @@ echo "📥 Downloading and processing allowlists..."
 echo ""
 
 # Danh sách URLs allowlist từ AdGuard
+# Mọi URL dưới đây đã được kiểm chứng trả HTTP 200 và soi nội dung thật.
+# Trước khi thêm nguồn mới, hãy curl thử: một URL 404 KHÔNG làm workflow đỏ ngay
+# ở bước tải (chỉ retry rồi cảnh báo), nhưng nếu mọi nguồn hỏng thì chốt an toàn
+# MIN_ALLOW_DOMAINS sẽ exit 1 và chặn luôn việc cập nhật blocklist.
 declare -a ALLOW_URLS=(
-  "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/whitelist/whitelist-onlydomains.txt"
-  "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/whitelist/whitelist-onlydomains.txt"
+  # AdGuard DNS filter — domain mà chính tác giả filter loại trừ (~1.100 + ~420)
+  "https://raw.githubusercontent.com/AdguardTeam/AdGuardSDNSFilter/master/Filters/exclusions.txt"
+  "https://raw.githubusercontent.com/AdguardTeam/AdGuardSDNSFilter/master/Filters/exceptions.txt"
+  # Ngân hàng & tài chính (~4.000) — có sẵn ngân hàng VN: vietcombank.com.vn,
+  # vietinbank.vn, bidv.vn, agribank.com.vn, tpb.vn, eximbank.com.vn...
+  # Cùng nguồn mà workflow CGPS lớp 2 đang dùng → allowlist 2 lớp nhất quán.
+  "https://raw.githubusercontent.com/AdguardTeam/HttpsExclusions/master/exclusions/banks.txt"
+  # Dịch vụ có dữ liệu nhạy cảm: xác thực, thanh toán, y tế (~180)
+  "https://raw.githubusercontent.com/AdguardTeam/HttpsExclusions/master/exclusions/sensitive.txt"
+  # Allowlist chống chặn nhầm phổ biến của Pi-hole (~190), đã grep: sạch quảng cáo
+  "https://raw.githubusercontent.com/anudeepND/whitelist/master/domains/whitelist.txt"
 )
+# CỐ Ý KHÔNG dùng:
+#   - hagezi .../whitelist/whitelist-onlydomains.txt (raw + jsdelivr): 404, đường
+#     dẫn không tồn tại trên branch main (đã dò 15 biến thể đường dẫn).
+#   - AdguardTeam/cname-trackers .../combined_whitelist.txt: 404, nguồn đã chết.
+#   - anudeepND/referral-sites.txt: whitelist cả doubleclick.net → mở chặn quảng cáo.
+#   - anudeepND/optional-list.txt: chứa acdn.adnxs.com (CDN quảng cáo).
 
 # KHÔNG reset ALLOW_TMP ở đây: nó đang giữ các rule ngoại lệ @@ thu được từ
 # nguồn blocklist bên trên. Chỉ reset bảng thống kê.
