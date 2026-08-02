@@ -5,7 +5,7 @@
 // Never commit a personal Cloudflare Gateway URL here — this repo is public,
 // and anyone who forks it would route their DNS traffic through your account.
 // The defaults below are public resolvers so a fresh fork works out of the box.
-let UPSTREAM_PRIMARY = 'https://1dy4kc9lts.cloudflare-gateway.com/dns-query';
+let UPSTREAM_PRIMARY = 'https://cloudflare-gateway.com/dns-query';
 let UPSTREAM_FALLBACK = 'https://dns.mullvad.net/dns-query';
 let UPSTREAM_GEO_BYPASS = 'https://dns.mullvad.net/dns-query'; // Re-resolve without ECS when geo-block returns loopback
 const UPSTREAM_TIMEOUT = 5000;
