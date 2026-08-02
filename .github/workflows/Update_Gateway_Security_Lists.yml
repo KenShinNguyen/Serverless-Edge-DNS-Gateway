@@ -31,8 +31,12 @@ on:
     branches:
       - main
     paths:
-      # Chỉ chạy khi đổi cấu hình lớp 2 hoặc allowlist dùng chung
-      # (không chạy theo các auto-commit blocklists hằng giờ của lớp 1)
+      # Chỉ chạy khi đổi cấu hình lớp 2 hoặc allowlist dùng chung.
+      # Lưu ý: commit tự động của workflow lớp 1 dùng GITHUB_TOKEN, mà GitHub
+      # cố tình KHÔNG cho push bằng token đó kích hoạt workflow khác (chống đệ
+      # quy) — nên allowlist do lớp 1 sinh ra không làm workflow này chạy ngay;
+      # nó được đồng bộ ở lần chạy theo lịch hằng ngày. Trigger này chỉ có tác
+      # dụng với push của người thật hoặc merge PR.
       - ".github/workflows/Update_Gateway_Security_Lists.yml"
       - "rules/allowlists.txt"
   workflow_dispatch:
@@ -47,11 +51,17 @@ concurrency:
 env:
   NODE_ENV: production
   # Lớp 2 chỉ lo bảo mật: malware / phishing / scam.
-  # HaGeZi TIF Mini (~161k domain) nằm gọn trong quota 300k của gói Free.
+  # HaGeZi TIF Mini (~170k domain) nằm gọn trong quota 300k của gói Free.
   # KHÔNG dùng TIF Medium (~398k) hay TIF Full (~2.1M): vượt quota, CGPS sẽ
   # cắt bớt phần vượt một cách ngẫu nhiên.
+  #
+  # Đường dẫn phải là wildcard/<list>-onlydomains.txt. Thư mục domains/ KHÔNG
+  # tồn tại trong repo hagezi — URL cũ (domains/tif.mini.txt) trả 404, mà
+  # downloadFiles của CGPS không kiểm tra response.ok nên vẫn ghi file rỗng và
+  # báo "Done": workflow xanh trong khi lớp 2 không đẩy domain nào lên Gateway.
+  # Bước "Verify downloaded lists" bên dưới chặn đúng kiểu hỏng âm thầm này.
   DEFAULT_BLOCKLIST_URLS: |
-    https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/domains/tif.mini.txt
+    https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/tif.mini-onlydomains.txt
   # Dòng đầu: allowlist dùng chung với Lớp 1 (rules/allowlists.txt của repo này)
   # — đây chính là cơ chế đồng bộ allowlist giữa 2 lớp mà rules/allowlists.txt
   # mô tả. Các dòng sau: chống chặn nhầm phổ biến của list bảo mật.
@@ -107,6 +117,31 @@ jobs:
         run: npm run download:blocklist
         env:
           BLOCKLIST_URLS: ${{ vars.BLOCKLIST_URLS || env.DEFAULT_BLOCKLIST_URLS }}
+
+      # Chốt an toàn bắt buộc: downloadFiles của CGPS gọi fetch() rồi ghi thẳng
+      # response.body ra file mà KHÔNG kiểm tra response.ok. Nguồn 404/403 vì
+      # thế chỉ tạo ra file rỗng (hoặc chứa trang lỗi) và script vẫn in "Done",
+      # nên workflow xanh trong khi Cloudflare Gateway không nhận domain nào —
+      # đúng tình trạng đã xảy ra với URL domains/tif.mini.txt trước đây.
+      - name: Verify downloaded lists
+        env:
+          MIN_BLOCK_DOMAINS: ${{ vars.MIN_BLOCK_DOMAINS || '50000' }}
+        run: |
+          set -euo pipefail
+          count_domains() {
+            [ -f "$1" ] || { echo 0; return; }
+            grep -ciE '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$' "$1" || true
+          }
+          block=$(count_domains blocklist.txt)
+          allow=$(count_domains allowlist.txt)
+          echo "blocklist.txt: $block domain | allowlist.txt: $allow domain"
+          if [ "$block" -lt "$MIN_BLOCK_DOMAINS" ]; then
+            echo "::error::Blocklist chỉ có $block domain (< $MIN_BLOCK_DOMAINS) — nhiều khả năng URL nguồn đã hỏng (404/403). Dừng lại để không đẩy danh sách rỗng lên Cloudflare Gateway."
+            exit 1
+          fi
+          if [ "$allow" -eq 0 ]; then
+            echo "::warning::Allowlist rỗng — nguồn allowlist có thể đã hỏng. Vẫn tiếp tục vì allowlist chỉ ảnh hưởng phần ngoại lệ."
+          fi
 
       - name: Create or update rules and lists
         run: npm run cloudflare-create
