@@ -29,7 +29,6 @@
 3dsecure.gpwebpay.com
 3dsecure.icicibank.com
 3dsecure.no
-4.bp.blogspot.com
 4strokemedia.com
 4user.yeskey.or.kr
 53.com
@@ -104,7 +103,6 @@ admin.dable.io
 admitad.com
 adobedtm.com
 ads.adsterra.com
-ads.gatacivi.com
 ads.tdbank.com
 adshell.net
 adsterra.com
@@ -180,7 +178,6 @@ altabanka.rs
 altbank.com
 alterna.ca
 altinn.no
-alwingulla.com
 alxinger-bank.de
 amazonaws.com
 ambank.amonline.com.my
@@ -639,7 +636,6 @@ bugsnag.com
 buhl.de
 bukopin.co.id
 bulbankonline.bg
-bullionglidingscuttle.com
 bunq.app
 bunq.com
 bupa.com.au
@@ -927,7 +923,6 @@ crm-cdn.peek-cloppenburg.com
 crobanet.croatiabanka.hr
 cronbank.de
 crowdtwist.com
-crumpetprankerstench.com
 cs.silverpop.com
 csas.cz
 csb.co.in
@@ -1423,7 +1418,6 @@ gobank-online.de
 goldbach.com
 goldenpay.az
 googleadapis.l.google.com
-googleads.g.doubleclick.net
 googleapis.com
 googletagmanager.com
 googletagservices.com
@@ -1532,7 +1526,6 @@ homebank.ro
 homebank.tj
 homebanking.bancoctt.pt
 homebanking.sskm.de
-hopphim.online
 hos.anadolubank.com.tr
 host-tracker.com
 hostinger.com
@@ -2038,16 +2031,13 @@ jago.com
 jango.com
 jbf.no
 jenius.com
-jf.nairydeices.com
 jihsunbank.com.tw
 jkopay.com
 jp-bank.japanpost.jp
 jquery.com
-js.aiservice.vn
 js.datadome.co
 js.monitor.azure.com
 jsafrasarasin.de
-jsc.adskeeper.co.uk
 jsdelivr.net
 juliusbaer.com
 jumia.com.ng
@@ -2333,8 +2323,6 @@ meatballsandads.com
 mebank.com.au
 mebytmb.com
 media-consumer365.desigual.com
-media.nghean24h.vn
-media1.admicro.vn
 mediametrics.ru
 mediserv.info
 megabank.com.tw
@@ -2624,7 +2612,6 @@ omasp.fi
 omniture.walmart.com
 omsc.kpn.com
 omtrdc.net
-on-web-cdn.gviet.vn
 onba.ch
 oneaccount.com
 oneclickmoney.ru
@@ -2848,7 +2835,6 @@ p2p.mdm.ru
 p2y.com.ua
 pagbrasil.com
 pagead.l.doubleclick.net
-pagead2.googlesyndication.com
 pagseguro.uol.com.br
 palmettohealthcu.org
 papara.com
@@ -2981,7 +2967,6 @@ platipokarte.ru
 platiza.ru
 platron.ru
 plausible.io
-player.sohatv.vn
 players.brightcove.net
 playhydrax.com
 plerdy.com
@@ -3663,7 +3648,6 @@ secureinternetbank.com
 securepay.simplepay.hu
 securepay.tcsbank.ru
 securepay.ufc.ge
-securepubads.g.doubleclick.net
 securesafe.com
 secureshop.firstdata.lv
 securitybank.com
@@ -3685,7 +3669,6 @@ seosprint.net
 service.fuib.com
 service.santanderconsumer.at
 services.sonarr.tv
-services.vlitag.com
 servis24.cz
 servus.ca
 settrade.com
@@ -4134,8 +4117,6 @@ stash.roistat.com
 stat-dv.mtsbank.ru
 statcounter.com
 static.addtoany.com
-static.ads-twitter.com
-static.amcdn.vn
 static.siteheart.com
 static2.manualslib.com
 stats.appsflyer.com
@@ -4287,7 +4268,6 @@ totaladblock.com
 totenbanken.no
 touchbank.com
 tpb.vn
-tpc.googlesyndication.com
 tr.rdrtr.com
 tracemyip.org
 track.rutarget.ru
@@ -4580,7 +4560,6 @@ visecaone.ch
 visualwebsiteoptimizer.com
 vivocha.com
 vivuso.ru
-vlitag.com
 vlvb.de
 voba-aschaffenburg.de
 voba-aw.de
@@ -4756,7 +4735,6 @@ vorne.de
 vostbank.ru
 vostok.bank
 voyeurhit.com
-voz.vn
 vp.ru
 vpbank.com.vn
 vpos.isbank.co.uk
@@ -5058,7 +5036,6 @@ www.unicap-bd.com
 www.unionbank.com.bd
 www.uttarabank-bd.com
 www.uttarafinance.biz
-www.vipads.live
 www.wooribank.com
 www.youtube-nocookie.com
 www1.royalbank.com
@@ -5066,7 +5043,6 @@ www2.danskebank.ee
 www2.jugra.ru
 www3.doubleclick.net
 www4.handelsbanken.fi
-xahoingaynay.com.vn
 xalqbank.az
 xapi.ozon.ru
 xbox.ipv6.microsoft.com
