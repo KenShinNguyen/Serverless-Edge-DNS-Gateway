@@ -16,8 +16,12 @@ permissions:
 # ở base commit giống nhau, job push sau bị đá vì main đã bị job kia đẩy lên
 # trước. cancel-in-progress: true huỷ job cũ, chỉ giữ lại lần chạy mới nhất —
 # an toàn vì mọi thứ chỉ tồn tại trên runner tạm, chưa từng commit dở dang.
+#
+# Group đặt cố định theo tên file thay vì ${{ github.workflow }}: biến đó trả
+# về tên hiển thị của workflow, nên 2 file lỡ trùng `name:` sẽ dùng chung một
+# group và huỷ lẫn nhau mỗi lần cron chạy.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: update-dns-blocklists-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

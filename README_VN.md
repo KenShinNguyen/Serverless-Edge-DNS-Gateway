@@ -27,7 +27,7 @@ Dịch vụ DNS-over-HTTPS (DoH) bảo mật, hiệu năng cao, chạy trên h�
 ### 1. Fork dự án & Bật Actions
 1. [Fork dự án này](../../fork) về tài khoản GitHub của bạn.
 2. Truy cập tab **Actions** trong repository bạn vừa fork và nhấn **I understand my workflows, go ahead and enable them**.
-3. Chọn và **Enable** thủ công 2 workflows: `Update DNS Blocklists` và `Delete old workflow runs`.
+3. Chọn và **Enable** thủ công 2 workflows: `Update DNS Blocklists` và `Delete Old Workflow Runs`. (`Update Filter Lists` là workflow Lớp 2 / CGPS tuỳ chọn — cứ để tắt nếu bạn chưa tạo các secrets mô tả ở [phần dưới](#-lớp-2-lọc-bảo-mật-bằng-cloudflare-gateway-cgps).)
 
 ### 2. Triển khai lên Cloudflare Pages
 1. Vào [Workers & Pages > Create application > Connect to Git](https://dash.cloudflare.com/?to=/:account/pages/new/provider/github).
@@ -78,7 +78,7 @@ Các quy tắc chi tiết:
 
 *   **`blocklists.txt`**: Được GitHub Actions cập nhật tự động mỗi 3 giờ.
     *   **Cách cấu hình**: Thay đổi các URL trong lệnh `curl` bên trong file [update_lists.sh](update_lists.sh) để thêm hoặc bớt các nguồn chặn.
-    *   **Chốt an toàn**: nếu tải lỗi khiến danh sách tụt xuống dưới 100.000 domain, script sẽ huỷ cập nhật và giữ nguyên danh sách cũ.
+    *   **Chốt an toàn**: script huỷ cập nhật và giữ nguyên danh sách cũ nếu lỗi tải khiến danh sách tụt dưới 50.000 domain (đổi được bằng biến môi trường `MIN_DOMAINS`), hoặc nếu quá nửa số nguồn thất bại.
 *   **`allowlists.txt`**: Quản lý **thủ công** — mỗi dòng một domain. Domain trong đây luôn được cho phép kể cả khi có tên trong `blocklists.txt` (tránh chặn nhầm các domain quan trọng như ngân hàng, thanh toán).
 *   **`private_tlds.txt`**: Thêm các domain nội bộ hoặc URL router của riêng bạn vào đây.
 *   **`redirect_rules.txt`**: Điều hướng domain bằng cơ chế CNAME Injection (Domain A -> CNAME -> Domain B). Giúp tùy chỉnh CDN chính xác theo ý muốn.

@@ -5,8 +5,14 @@
 // Never commit a personal Cloudflare Gateway URL here — this repo is public,
 // and anyone who forks it would route their DNS traffic through your account.
 // The defaults below are public resolvers so a fresh fork works out of the box.
-let UPSTREAM_PRIMARY = 'https://cloudflare-gateway.com/dns-query';
-let UPSTREAM_FALLBACK = 'https://dns.mullvad.net/dns-query';
+// Keep all three DIFFERENT: primary/fallback on separate providers so failover
+// survives one provider going down, and geo-bypass on a third that does not
+// honour ECS. A Cloudflare Gateway endpoint always carries the account slug
+// (https://<slug>.cloudflare-gateway.com/dns-query) — the bare apex is not a
+// resolver, so it can never be a working default here; set your own slug URL
+// through the UPSTREAM_PRIMARY environment variable instead.
+let UPSTREAM_PRIMARY = 'https://cloudflare-dns.com/dns-query';
+let UPSTREAM_FALLBACK = 'https://dns.google/dns-query';
 let UPSTREAM_GEO_BYPASS = 'https://dns.mullvad.net/dns-query'; // Re-resolve without ECS when geo-block returns loopback
 const UPSTREAM_TIMEOUT = 5000;
 
