@@ -116,7 +116,8 @@ Thiết bị ──DoH──▶ Pages Function (Lớp 1: quảng cáo/tracking ~
 
 *   Workflow lớp 2 nằm **ngay trong repo này** (lúc chạy nó checkout code CGPS từ `mrrfv/cloudflare-gateway-pihole-scripts@v1`, nên không cần repo riêng). Bật workflow trong tab **Actions** và tạo 2 secrets cho repo: `CLOUDFLARE_API_TOKEN` (quyền đọc/sửa Zero Trust) và `CLOUDFLARE_ACCOUNT_ID`.
 *   Dùng **đúng tài khoản Cloudflare** sở hữu endpoint Gateway đã khai trong `UPSTREAM_PRIMARY` / `UPSTREAM_FALLBACK`.
-*   [rules/allowlists.txt](rules/allowlists.txt) là **allowlist dùng chung**: lớp Edge đọc trực tiếp, còn workflow lớp 2 kéo qua raw URL — thêm domain một lần là được mở chặn ở cả 2 lớp.
+*   [rules/allowlists.txt](rules/allowlists.txt) là **allowlist dùng chung**: lớp Edge đọc trực tiếp, workflow lớp 2 kéo đúng file đó qua raw URL nên 2 lớp cùng mở chặn một tập domain. File này do workflow lớp 1 sinh lại mỗi lần chạy, nên muốn thêm domain lâu dài thì thêm vào nguồn allowlist của workflow đó chứ không sửa trực tiếp file. Do lớp 1 commit bằng `GITHUB_TOKEN` (GitHub cố tình không cho push bằng token này kích hoạt workflow khác), lớp 2 nhận allowlist mới ở lần chạy theo lịch hằng ngày chứ không ngay lập tức.
+*   Workflow **fail rõ ràng nếu nguồn list hỏng**. Bộ tải của CGPS không kiểm tra HTTP status — URL 404 vẫn tạo file rỗng rồi báo thành công — nên có thêm bước kiểm tra: dừng job nếu blocklist dưới 50.000 domain (đổi được bằng Actions variable `MIN_BLOCK_DOMAINS`).
 *   Nên bật thêm các **Security Category có sẵn** (malware, phishing, new domains) trong Gateway policy của Zero Trust — hoàn toàn miễn phí và không tính vào quota 300k.
 *   Giữ nguyên kiểu chặn mặc định của Gateway (trả về `0.0.0.0`). **Không** dùng kiểu chặn trả về `127.0.0.1` — logic Geo-Bypass sẽ coi đó là geo-block và re-resolve qua Mullvad, vô tình mở chặn domain đó.
 
