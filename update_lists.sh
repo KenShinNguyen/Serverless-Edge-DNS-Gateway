@@ -174,8 +174,8 @@ echo ""
 
 # Danh sách URLs allowlist từ AdGuard
 declare -a ALLOW_URLS=(
-  "https://raw.githubusercontent.com/AdguardTeam/AdguardFilters/master/SafebrowsingFilter/whitelist.txt"
-  "https://raw.githubusercontent.com/AdguardTeam/AdGuardSDNSFilter/master/Filters/exceptions.txt"
+  "https://github.com/AdguardTeam/AdGuardSDNSFilter/blob/master/Filters/exclusions.txt.txt"
+  "https://github.com/AdguardTeam/AdGuardSDNSFilter/blob/master/Filters/exceptions.txt"
   "https://raw.githubusercontent.com/AdguardTeam/cname-trackers/master/combined_whitelist.txt"
 )
 
