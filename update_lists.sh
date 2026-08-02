@@ -238,8 +238,6 @@ declare -a ALLOW_URLS=(
   "https://raw.githubusercontent.com/AdguardTeam/HttpsExclusions/master/exclusions/banks.txt"
   # Dịch vụ có dữ liệu nhạy cảm: xác thực, thanh toán, y tế (~180)
   "https://raw.githubusercontent.com/AdguardTeam/HttpsExclusions/master/exclusions/sensitive.txt"
-  # Allowlist chống chặn nhầm phổ biến của Pi-hole (~190), đã grep: sạch quảng cáo
-  "https://raw.githubusercontent.com/anudeepND/whitelist/master/domains/whitelist.txt"
 )
 # CỐ Ý KHÔNG dùng:
 #   - hagezi .../whitelist/whitelist-onlydomains.txt (raw + jsdelivr): 404, đường
