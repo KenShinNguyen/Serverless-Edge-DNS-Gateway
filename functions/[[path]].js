@@ -5,7 +5,7 @@
 // Never commit a personal Cloudflare Gateway URL here — this repo is public,
 // and anyone who forks it would route their DNS traffic through your account.
 // The defaults below are public resolvers so a fresh fork works out of the box.
-let UPSTREAM_PRIMARY = 'https://1dy4kc9lts.cloudflare-gateway.com/dns-query';
+let UPSTREAM_PRIMARY = 'https://cloudflare-gateway.com/dns-query';
 let UPSTREAM_FALLBACK = 'https://dns.mullvad.net/dns-query';
 let UPSTREAM_GEO_BYPASS = 'https://dns.mullvad.net/dns-query'; // Re-resolve without ECS when geo-block returns loopback
 const UPSTREAM_TIMEOUT = 5000;
@@ -14,7 +14,7 @@ const UPSTREAM_TIMEOUT = 5000;
 // requires the token as a path segment: /dns-query/<token>, /apple/<token>,
 // /debug/<token>. Untokened paths return 404. This is a lightweight abuse
 // barrier for the public endpoint, not full authentication.
-let DOH_TOKEN = '2WJGvSwDPRc1xAws28NZvMkV2';
+let DOH_TOKEN = '';
 
 // CORS origin (env: CORS_ORIGIN). Empty = no CORS headers (default).
 // Browser/OS native DoH does not need CORS; set to '*' only if you really
@@ -22,7 +22,7 @@ let DOH_TOKEN = '2WJGvSwDPRc1xAws28NZvMkV2';
 let CORS_ORIGIN = '';
 
 // Refresh interval for ALL lists (blocklist, allowlists, private TLDs, redirect rules)
-const ALL_LISTS_REFRESH_INTERVAL = 3600000; // 6 hour
+const ALL_LISTS_REFRESH_INTERVAL = 21600000; // 6 hour
 
 const AD_BLOCK_ENABLED = true;
 const BLOCKLIST_URL = '/rules/blocklists.txt';
