@@ -119,6 +119,13 @@ echo ""
 declare -a BLOCK_URLS=(
   "https://raw.githubusercontent.com/mullvad/dns-blocklists/refs/heads/main/output/doh/doh_adblock.txt"
   "https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt"
+  # hostsVN — hai nguồn Việt Nam duy nhất còn lại sau khi gỡ ABPVN.
+  # Đã kiểm chứng: cả hai ở định dạng hosts thuần, 0/5.738 dòng là rule cosmetic
+  # hoặc rule có modifier, nên chúng KHÔNG dính lỗi chặn nhầm cả trang mà ABPVN
+  # gây ra. threat/filter.txt còn là lớp chặn malware/phishing nhắm vào người
+  # dùng Việt mà các list quốc tế phủ không tốt.
+  "https://raw.githubusercontent.com/bigdargon/hostsVN/master/filters/adservers.txt"
+  "https://raw.githubusercontent.com/bigdargon/hostsVN/master/extensions/threat/filter.txt"
   "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/pro-onlydomains.txt"
   "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/popupads-onlydomains.txt"
   "https://raw.githubusercontent.com/mullvad/dns-blocklists/refs/heads/main/output/doh/doh_gambling.txt"
