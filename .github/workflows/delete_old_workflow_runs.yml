@@ -17,5 +17,8 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           repository: ${{ github.repository }}
-          retain_days: 1
-          keep_minimum_runs: 0
+          # Giữ đủ lịch sử để còn truy được nguyên nhân khi một lần chạy hỏng:
+          # retain_days: 1 + keep_minimum_runs: 0 xoá gần như sạch log mỗi đêm,
+          # nên lỗi xảy ra hôm trước là mất dấu vết.
+          retain_days: 30
+          keep_minimum_runs: 10

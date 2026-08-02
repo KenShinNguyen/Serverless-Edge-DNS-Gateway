@@ -31,7 +31,7 @@ A secure, high-performance DNS-over-HTTPS (DoH) proxy running on Cloudflare's gl
 ### 1. Fork & Setup Actions
 1. [Fork this project](../../fork) to your GitHub account.
 2. Go to the **Actions** tab in your forked repository and click **I understand my workflows, go ahead and enable them**.
-3. Manually select and **Enable** the following workflows: `Update DNS Blocklists` and `Delete old workflow runs`.
+3. Manually select and **Enable** the following workflows: `Update DNS Blocklists` and `Delete Old Workflow Runs`. (`Update Filter Lists` is the optional Layer 2 / CGPS workflow — leave it disabled unless you set up the secrets described [below](#-layer-2-cloudflare-gateway-security-filtering-cgps).)
 
 ### 2. Deploy to Cloudflare Pages
 1. Go to [Workers & Pages > Create application > Connect to Git](https://dash.cloudflare.com/?to=/:account/pages/new/provider/github).
@@ -82,7 +82,7 @@ Detailed rules:
 
 *   **`blocklists.txt`**: Automatically updated **every 3 hours** by the GitHub Actions workflow.
     *   **How to configure**: Edit the URLs in the `curl` command inside [update_lists.sh](update_lists.sh) to add or remove filtering sources.
-    *   **Safety guard**: if a download failure would shrink the list below 100,000 domains, the update aborts and the previous list is kept.
+    *   **Safety guard**: the update aborts and keeps the previous list if download failures would shrink it below 50,000 domains (override with the `MIN_DOMAINS` environment variable), or if more than half the sources fail.
 *   **`allowlists.txt`**: Maintained **manually** — add one domain per line. Domains here override `blocklists.txt` and are never blocked even if flagged by a filter (prevents false positives on critical domains like banking or payment services).
 *   **`private_tlds.txt`**: Add your custom local domains or router URLs here.
 *   **`redirect_rules.txt`**: Redirects domain A to domain B using a CNAME record. Perfect for forcing specific CDN results.
