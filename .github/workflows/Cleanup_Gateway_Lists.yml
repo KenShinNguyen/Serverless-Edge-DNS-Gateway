@@ -1,0 +1,81 @@
+# ============================================================================
+# ⚠️ WORKFLOW XOÁ DỮ LIỆU — CHẠY THỦ CÔNG, KHÔNG CÓ LỊCH TỰ ĐỘNG
+#
+# Xoá TOÀN BỘ list Cloudflare Zero Trust có tên bắt đầu bằng "CGPS List"
+# cùng mọi rule tên bắt đầu bằng "CGPS Filter Lists", trên tài khoản ứng với
+# secret CLOUDFLARE_ACCOUNT_ID của repo này.
+#
+# Phạm vi ảnh hưởng: xoá HẾT, không phân biệt list đó do repo nào đẩy lên.
+# Nếu bạn có nhiều nơi cùng chạy CGPS trên một tài khoản (ví dụ một repo
+# riêng chặn quảng cáo), tất cả đều bị xoá.
+#
+# Sau khi chạy, Gateway KHÔNG còn list/rule nào của CGPS. Muốn dựng lại:
+#   - List quảng cáo: chạy workflow trong repo cloudflare-gateway-pihole-scripts
+#   - List bảo mật TIF: chạy workflow "Update Filter Lists" của repo này
+#   - Hoặc dùng Security Categories có sẵn của Zero Trust (miễn phí, không
+#     tốn quota 300k) thay cho list bảo mật
+#
+# Lọc theo tên là cơ chế duy nhất CGPS có: list bạn tự tạo tay với tên khác
+# sẽ KHÔNG bị đụng tới.
+# ============================================================================
+name: Cleanup Gateway Lists (destructive)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Gõ chính xác DELETE để xác nhận xoá toàn bộ list + rule CGPS'
+        required: true
+        default: ''
+
+concurrency:
+  group: cleanup-gateway-lists-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      # Chốt chặn nhầm: workflow_dispatch rất dễ bấm nhầm từ giao diện Actions,
+      # nên bắt buộc gõ tay chuỗi xác nhận trước khi động tới Cloudflare.
+      - name: Kiểm tra xác nhận
+        run: |
+          if [ "${{ inputs.confirm }}" != "DELETE" ]; then
+            echo "::error::Chưa xác nhận. Nhập đúng chuỗi DELETE vào ô confirm để chạy."
+            exit 1
+          fi
+
+      - name: Kiểm tra secrets
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CF_TOKEN" ] || [ -z "$CF_ACCOUNT" ]; then
+            echo "::error::Thiếu secret CLOUDFLARE_API_TOKEN và/hoặc CLOUDFLARE_ACCOUNT_ID."
+            exit 1
+          fi
+
+      - name: Checkout CGPS
+        uses: actions/checkout@v6
+        with:
+          repository: "mrrfv/cloudflare-gateway-pihole-scripts"
+          ref: "v1"
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: ".node-version"
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      # cloudflare-delete = cloudflare-delete:rule && cloudflare-delete:list
+      # Xoá rule TRƯỚC rồi mới xoá list: Cloudflare từ chối xoá list đang được
+      # một rule tham chiếu. CGPS_DELETION_ENABLED là công tắc an toàn của
+      # chính CGPS — thiếu biến này cả hai script chỉ in cảnh báo rồi thoát.
+      - name: Xoá rule và toàn bộ list CGPS
+        run: npm run cloudflare-delete
+        env:
+          CGPS_DELETION_ENABLED: "true"
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
