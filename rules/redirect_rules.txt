@@ -17,7 +17,12 @@ upos-sz-mirror08h.bilivideo.com upos-hz-mirrorakam.akamaized.net
 upos-sz-mirrorcosov.bilivideo.com upos-hz-mirrorakam.akamaized.net
 
 # Medium
-medium.com rocket.net
+# GỠ: medium.com rocket.net
+# rocket.net là dịch vụ hosting không liên quan tới Medium, nên nó không có
+# chứng chỉ TLS cho medium.com. Trình duyệt kết nối tới IP của rocket.net
+# nhưng gửi SNI "medium.com" → chứng chỉ không khớp → Safari/Chrome báo
+# "This Connection Is Not Private". Chỉ redirect sang host thuộc cùng CDN của
+# domain gốc (ví dụ *.akamaized.net của chính dịch vụ đó).
 
 # Pornhub
 pornhub.com www.pornhub.com
