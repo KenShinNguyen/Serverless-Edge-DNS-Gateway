@@ -42,19 +42,39 @@ normalize_domains() {
   }'
 }
 
-# Từ một nguồn filter: lấy các domain BỊ CHẶN (bỏ qua rule ngoại lệ @@).
+# Chỉ giữ những rule THỰC SỰ chặn cả domain — hợp lệ ở tầng DNS.
+#
+# normalize_domains cắt bỏ mọi thứ sau ^ # / :, nên nếu không lọc trước thì các
+# rule dưới đây đều bị rút gọn thành một domain trần và biến thành lệnh chặn
+# toàn bộ trang, dù ý nghĩa gốc hẹp hơn nhiều:
+#
+#   vnexpress.net##.box-quangcao       (ẩn phần tử)        → chặn cả vnexpress.net
+#   vnexpress.net#@#.banner            (ngoại lệ cosmetic) → chặn cả vnexpress.net
+#   ||vnexpress.net^$popup             (chỉ chặn popup)    → chặn cả vnexpress.net
+#   ||shopee.vn^$third-party           (chỉ khi bên thứ 3) → chặn cả shopee.vn
+#   ||ads.com^$script,domain=other.vn  (chỉ trên other.vn) → chặn cả ads.com
+#
+# List dành cho trình duyệt (ABPVN, AdGuard base) đầy rule kiểu này, nên bỏ qua
+# chúng là bắt buộc. Đánh đổi: vài domain quảng cáo chỉ được khai báo kèm
+# modifier sẽ lọt lưới — chấp nhận được, vì chặn nhầm một trang lớn gây hậu quả
+# nặng hơn nhiều so với sót một domain quảng cáo.
+DNS_INCOMPATIBLE='#[@?$%]?#|\$|^[[:space:]]*/'
+
+# Từ một nguồn filter: lấy các domain BỊ CHẶN (bỏ rule ngoại lệ @@ và rule hẹp).
 extract_block_domains() {
-  { grep -v '^[[:space:]]*@@' || true; } | normalize_domains
+  { grep -vE "^[[:space:]]*@@|$DNS_INCOMPATIBLE" || true; } | normalize_domains
 }
 
 # Từ một nguồn filter: lấy các domain ĐƯỢC MỞ CHẶN (chỉ rule ngoại lệ @@).
 extract_allow_domains() {
-  { grep '^[[:space:]]*@@' || true; } | sed 's/^[[:space:]]*@@//' | normalize_domains
+  { grep '^[[:space:]]*@@' || true; } \
+    | { grep -vE "$DNS_INCOMPATIBLE" || true; } \
+    | sed 's/^[[:space:]]*@@//' | normalize_domains
 }
 
 # Nguồn allowlist thuần: chấp nhận cả domain trần lẫn rule @@.
 extract_any_domains() {
-  sed 's/^[[:space:]]*@@//' | normalize_domains
+  { grep -vE "$DNS_INCOMPATIBLE" || true; } | sed 's/^[[:space:]]*@@//' | normalize_domains
 }
 
 # ============================================================================
