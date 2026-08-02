@@ -60,7 +60,28 @@ env:
     https://raw.githubusercontent.com/AdguardTeam/HttpsExclusions/master/exclusions/banks.txt
 
 jobs:
+  # Lớp 2 là tuỳ chọn: repo mới fork về chưa có secrets Cloudflare. Kiểm tra
+  # trước để workflow bỏ qua êm thay vì fail đỏ ở bước `cloudflare-create`.
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+    steps:
+      - id: check
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -n "$CF_TOKEN" ] && [ -n "$CF_ACCOUNT" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Bỏ qua Lớp 2 (CGPS): chưa có secret CLOUDFLARE_API_TOKEN và/hoặc CLOUDFLARE_ACCOUNT_ID."
+          fi
+
   cgps:
+    needs: preflight
+    if: needs.preflight.outputs.configured == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
