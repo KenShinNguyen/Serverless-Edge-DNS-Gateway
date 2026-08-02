@@ -174,7 +174,8 @@ echo ""
 
 # Danh sách URLs allowlist từ AdGuard
 declare -a ALLOW_URLS=(
-  "https://raw.githubusercontent.com/AdguardTeam/cname-trackers/master/combined_whitelist.txt"
+  "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/whitelist/whitelist-onlydomains.txt"
+  "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/whitelist/whitelist-onlydomains.txt"
 )
 
 # Khởi tạo file tmp allowlist
