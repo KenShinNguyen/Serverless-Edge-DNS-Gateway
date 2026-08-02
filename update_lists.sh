@@ -78,12 +78,10 @@ echo ""
 declare -a URLS=(
   "https://raw.githubusercontent.com/mullvad/dns-blocklists/refs/heads/main/output/doh/doh_adblock.txt"
   "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/pro-onlydomains.txt"
-  "https://small.oisd.nl/domainswild2"
   "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/popupads-onlydomains.txt"
   "https://raw.githubusercontent.com/mullvad/dns-blocklists/refs/heads/main/output/doh/doh_gambling.txt"
   "https://raw.githubusercontent.com/mullvad/dns-blocklists/main/output/doh/doh_privacy.txt"
   "https://abpvn.com/filter/abpvn-3qgDm6.txt"
-  "https://urlhaus.abuse.ch/downloads/hostfile"
 )
 
 # Khởi tạo file tmp và stats
