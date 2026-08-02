@@ -81,6 +81,7 @@ declare -a BLOCK_URLS=(
   "https://raw.githubusercontent.com/mullvad/dns-blocklists/refs/heads/main/output/doh/doh_adblock.txt"
   "https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt"
   "https://raw.githubusercontent.com/bigdargon/hostsVN/master/filters/adservers.txt"
+  "https://raw.githubusercontent.com/bigdargon/hostsVN/master/extensions/threat/filter.txt"
   "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/pro-onlydomains.txt"
   "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/popupads-onlydomains.txt"
   "https://raw.githubusercontent.com/mullvad/dns-blocklists/refs/heads/main/output/doh/doh_gambling.txt"
