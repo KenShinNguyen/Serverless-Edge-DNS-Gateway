@@ -921,6 +921,7 @@ data.email.tangerine.ca
 data.notify.macys.com
 data.orders.costco.ca
 data.orders.costco.com
+data.promo.timhortons.ca
 data.service.paypal.com
 datacaciques.com
 datadoghq-browser-agent.com
