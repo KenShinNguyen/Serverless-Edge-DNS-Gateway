@@ -290,16 +290,30 @@ function hasLoopbackInAnswer(buf) {
   return false;
 }
 
+// Suffix ("wildcard") match, most-specific-wins.
+//
+// The sources feeding rules/blocklists.txt are wildcard lists: hagezi publishes
+// wildcard/<list>-onlydomains.txt with the subdomains stripped, because the
+// consumer is expected to block the domain *and everything under it*. Only ~1.5%
+// of the merged list are subdomains of another entry, so exact matching let most
+// real ad hostnames through — `doubleclick.net` was listed but a lookup for
+// `googleads.g.doubleclick.net` resolved normally.
+//
+// Walking from the full name up to the apex and stopping at the first hit keeps
+// allowlist precedence intact at every level: an allowlisted `foo.example.com`
+// stays reachable even when `example.com` is blocked, and a blocked
+// `ads.example.com` stays blocked even when `example.com` is allowlisted.
 function isDomainBlocked(domain) {
   if (!domain || adBlocklist.size === 0) return false;
 
-  // EXACT MATCH ONLY - Check allowlist first (priority)
-  if (adAllowlist.has(domain)) return false;
-
-  // EXACT MATCH ONLY - Check blocklist
-  if (adBlocklist.has(domain)) return true;
-
-  return false;
+  let candidate = domain;
+  while (true) {
+    if (adAllowlist.has(candidate)) return false;
+    if (adBlocklist.has(candidate)) return true;
+    const dot = candidate.indexOf('.');
+    if (dot === -1) return false;
+    candidate = candidate.substring(dot + 1);
+  }
 }
 
 // Check if domain matches private TLD list (suffix match)

@@ -29,6 +29,8 @@ Dịch vụ DNS-over-HTTPS (DoH) bảo mật, hiệu năng cao, chạy trên h�
 2. Truy cập tab **Actions** trong repository bạn vừa fork và nhấn **I understand my workflows, go ahead and enable them**.
 3. Chọn và **Enable** thủ công 2 workflows: `Update DNS Blocklists` và `Delete Old Workflow Runs`. (`Update Filter Lists` là workflow Lớp 2 / CGPS tuỳ chọn — cứ để tắt nếu bạn chưa tạo các secrets mô tả ở [phần dưới](#-lớp-2-lọc-bảo-mật-bằng-cloudflare-gateway-cgps).)
 
+Tuỳ chọn: đặt Actions variable `HEALTHCHECK_ENDPOINT` (Settings > Secrets and variables > Actions > Variables) bằng URL deployment của bạn, ví dụ `https://your-project.pages.dev`. Sau mỗi lần cập nhật list, workflow sẽ tự kiểm tra endpoint thật và báo đỏ nếu phân giải hỏng hoặc blocklist không còn được áp dụng. Nếu endpoint có token thì thêm secret `DOH_TOKEN`. Không đặt biến này thì bước kiểm tra được bỏ qua.
+
 ### 2. Triển khai lên Cloudflare Pages
 1. Vào [Workers & Pages > Create application > Connect to Git](https://dash.cloudflare.com/?to=/:account/pages/new/provider/github).
 2. Chọn repository bạn vừa Fork.
@@ -77,6 +79,8 @@ Các quy tắc nằm trong thư mục `rules/`. Khi bạn thực hiện thay đ�
 Các quy tắc chi tiết:
 
 *   **`blocklists.txt`**: Được GitHub Actions cập nhật tự động mỗi 3 giờ.
+    *   **So khớp theo wildcard**: một entry chặn cả domain đó *lẫn mọi subdomain bên dưới*, bằng cách duyệt từ tên được truy vấn ngược lên gốc và dừng ở kết quả khớp đầu tiên. Đây đúng là ngữ nghĩa mà nguồn list phát hành — hagezi cố tình lược bỏ subdomain trong `wildcard/<list>-onlydomains.txt`, và chỉ ~1,5% list gộp là subdomain của một entry khác, nên cách so khớp exact trước đây để lọt phần lớn hostname quảng cáo thật (`doubleclick.net` bị chặn nhưng `googleads.g.doubleclick.net` vẫn phân giải bình thường).
+    *   **Allowlist được ưu tiên theo từng cấp**, nên rule cụ thể hơn thắng: `foo.example.com` nằm trong allowlist vẫn vào được dù `example.com` bị chặn; ngược lại `ads.example.com` bị chặn vẫn chặn dù `example.com` nằm trong allowlist.
     *   **Cách cấu hình**: Thay đổi các URL trong lệnh `curl` bên trong file [update_lists.sh](update_lists.sh) để thêm hoặc bớt các nguồn chặn.
     *   **Chốt an toàn**: script huỷ cập nhật và giữ nguyên danh sách cũ nếu lỗi tải khiến danh sách tụt dưới 50.000 domain (đổi được bằng biến môi trường `MIN_DOMAINS`), hoặc nếu quá nửa số nguồn thất bại.
 *   **`allowlists.txt`**: Do chính workflow sinh ra, từ hai nguồn: các list exclusion/exception của AdGuard, và toàn bộ rule ngoại lệ `@@` tìm thấy trong chính các nguồn blocklist. Domain ở đây được ưu tiên hơn `blocklists.txt` và bị trừ khỏi blocklist ngay lúc build, nên một domain không thể nằm ở cả hai list.
