@@ -32,37 +32,16 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Giai đoạn 8: cache kết quả tải các nguồn chưa đổi giữa các lần chạy.
-      # Key chứa run_id nên luôn là key mới (bắt buộc để actions/cache lưu lại
-      # cache mới sau mỗi job) — restore-keys lấy cache gần nhất làm nền, nhờ
-      # đó scripts/download.sh (curl -z) có thể bỏ qua tải lại nguồn không đổi.
-      - name: Restore blocklist download cache
-        uses: actions/cache@v4
-        with:
-          path: .cache/blocklists
-          key: blocklist-cache-${{ github.run_id }}
-          restore-keys: |
-            blocklist-cache-
+      # Đã bỏ bước "Restore blocklist download cache" (actions/cache): nó lưu
+      # thư mục .cache/blocklists mà update_lists.sh không hề ghi vào, còn key
+      # lại gắn ${{ github.run_id }} nên không lần nào trùng. Kết quả là mỗi
+      # run đều "Cache not found" rồi kết thúc bằng cảnh báo "Path Validation
+      # Error: Path(s) ... do(es) not exist" — không tiết kiệm được gì. Muốn
+      # cache thật thì phải cho update_lists.sh tải bằng curl -z vào đúng thư
+      # mục đó trước đã.
 
       - name: Run update script
-        run: |
-          set -euo pipefail
-          # enable nullglob so the for-loop below simply skips when no files match
-          shopt -s nullglob || true
-
-          # Make update_lists.sh executable if present; don't fail if it's missing
-          if [ -f ./update_lists.sh ]; then
-            [ -x ./update_lists.sh ] || chmod +x ./update_lists.sh || true
-          else
-            echo "update_lists.sh not found — the step will still run (may fail later if required)."
-          fi
-
-          # Safely make any scripts in scripts/ executable (no-op if none exist)
-          for f in scripts/*.sh; do
-            [ -x "$f" ] || chmod +x "$f" || true
-          done
-
-          ./update_lists.sh
+        run: ./update_lists.sh
 
       - name: Commit and Push changes
         uses: stefanzweifel/git-auto-commit-action@v5
@@ -71,20 +50,18 @@ jobs:
           file_pattern: 'rules/*.txt'
           branch: ${{ github.ref }}
 
-      # Giai đoạn 7: health-check sau khi push — Cloudflare Pages tự động
-      # build+deploy khi thấy push mới trên nhánh này (không có bước deploy
-      # thủ công trong workflow). scripts/healthcheck.sh tự retry vài lần nếu
-      # deploy chưa kịp xong.
+      # Health check sau khi push — Cloudflare Pages tự build+deploy khi thấy
+      # commit mới trên nhánh này, nên script tự retry vài lần chờ deploy xong.
+      # Nó kiểm tra cả phân giải bình thường lẫn việc blocklist có thực sự được
+      # nạp (doubleclick.net phải trả NXDOMAIN).
+      #
+      # HEALTHCHECK_ENDPOINT KHÔNG có giá trị mặc định: trước đây mặc định là
+      # sedg.pages.dev — không phải deployment của repo này, nên ai fork về
+      # cũng đi kiểm tra tên miền của người khác. Thiếu biến thì script bỏ qua
+      # êm và in hướng dẫn đặt biến.
       - name: Health check DoH endpoint
         if: success()
-        run: |
-          set -euo pipefail
-          if [ -f scripts/healthcheck.sh ]; then
-            [ -x scripts/healthcheck.sh ] || chmod +x scripts/healthcheck.sh || true
-            scripts/healthcheck.sh
-          else
-            echo "scripts/healthcheck.sh not found — skipping health check"
-          fi
+        run: scripts/healthcheck.sh
         env:
-          HEALTHCHECK_ENDPOINT: ${{ vars.HEALTHCHECK_ENDPOINT || 'https://sedg.pages.dev' }}
+          HEALTHCHECK_ENDPOINT: ${{ vars.HEALTHCHECK_ENDPOINT }}
           DOH_TOKEN: ${{ secrets.DOH_TOKEN }}
