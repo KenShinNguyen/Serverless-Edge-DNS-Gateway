@@ -112,10 +112,10 @@ Thiết bị ──DoH──▶ Pages Function (Lớp 1: quảng cáo/tracking ~
 | Lớp | Nhiệm vụ | Danh sách |
 | :--- | :--- | :--- |
 | Edge (project này) | Quảng cáo, tracking, cờ bạc, telemetry | HaGeZi Pro++, AdGuard DNS,... (`update_lists.sh`) |
-| Gateway (CGPS) | Malware, phishing, lừa đảo (TIF) | HaGeZi TIF Mini ([.github/workflows/Update_Gateway_Security_Lists.yml](.github/workflows/Update_Gateway_Security_Lists.yml)) |
+| Gateway (CGPS) | Phishing, lừa đảo, ransomware | blocklistproject phishing + scam + ransomware, ~200k domain ([.github/workflows/Update_Gateway_Security_Lists.yml](.github/workflows/Update_Gateway_Security_Lists.yml)) |
 
 > [!WARNING]
-> **Đừng bật workflow này nếu bạn đã chạy CGPS ở nơi khác trên cùng tài khoản Cloudflare** — ví dụ một repo `cloudflare-gateway-pihole-scripts` riêng đang đẩy list quảng cáo lên Gateway. CGPS đặt tên list cố định (`CGPS List - Chunk N`) và dùng chung một rule (`CGPS Filter Lists`), nên hai bản CGPS trên cùng tài khoản sẽ ghi đè lẫn nhau: bên chạy sau chiếm các chunk đầu. Không có cơ chế namespace nào tách được hai bộ list. Mà quota 300.000 item của gói Free cũng không đủ: list quảng cáo ~298k cộng TIF ~170k là 468k, vượt trần.
+> **Đừng bật workflow này nếu bạn đã chạy CGPS ở nơi khác trên cùng tài khoản Cloudflare** — ví dụ một repo `cloudflare-gateway-pihole-scripts` riêng đang đẩy list quảng cáo lên Gateway. CGPS đặt tên list cố định (`CGPS List - Chunk N`) và dùng chung một rule (`CGPS Filter Lists`), nên hai bản CGPS trên cùng tài khoản sẽ ghi đè lẫn nhau: bên chạy sau chiếm các chunk đầu. Không có cơ chế namespace nào tách được hai bộ list. Mà quota 300.000 item của gói Free cũng không đủ: list quảng cáo ~298k cộng list bảo mật ~200k là ~500k, vượt trần.
 >
 > Trong trường hợp đó, hãy lấy malware/phishing từ **Security Categories** có sẵn: miễn phí, do Cloudflare tự cập nhật, và không tính vào quota 300k. Workflow này chỉ hợp lý khi Gateway của bạn dành riêng cho bảo mật, còn quảng cáo do lớp 1 lo hết tại edge.
 

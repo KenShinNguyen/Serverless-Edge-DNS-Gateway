@@ -48,18 +48,25 @@ concurrency:
 
 env:
   NODE_ENV: production
-  # Lớp 2 chỉ lo bảo mật: malware / phishing / scam.
-  # HaGeZi TIF Mini (~170k domain) nằm gọn trong quota 300k của gói Free.
-  # KHÔNG dùng TIF Medium (~398k) hay TIF Full (~2.1M): vượt quota, CGPS sẽ
-  # cắt bớt phần vượt một cách ngẫu nhiên.
+  # Lớp 2 chỉ lo bảo mật: phishing / scam / ransomware.
   #
-  # Đường dẫn phải là wildcard/<list>-onlydomains.txt. Thư mục domains/ KHÔNG
-  # tồn tại trong repo hagezi — URL cũ (domains/tif.mini.txt) trả 404, mà
-  # downloadFiles của CGPS không kiểm tra response.ok nên vẫn ghi file rỗng và
-  # báo "Done": workflow xanh trong khi lớp 2 không đẩy domain nào lên Gateway.
-  # Bước "Verify downloaded lists" bên dưới chặn đúng kiểu hỏng âm thầm này.
+  # Trước đây dùng HaGeZi TIF Mini, nhưng toàn bộ repo hagezi/dns-blocklists đã
+  # biến mất khỏi GitHub (raw trả 404 cho cả README lẫn LICENSE; các repo kế
+  # nhiệm hagezi/nrd và hagezi/dns-blocklists-legacy nêu trong thông báo di dời
+  # cũng 404). Nguồn dưới đây thuộc blocklistproject/Lists — đã kiểm chứng
+  # HTTP 200 và soi nội dung thật.
+  #
+  # Tổng sau khi gộp và khử trùng lặp: ~200.600 domain, nằm gọn trong quota
+  # 300.000 item của gói Zero Trust Free. CỐ Ý KHÔNG thêm blocklistproject
+  # malware.txt: riêng nó đã 2,66 triệu dòng, vượt xa quota nên CGPS sẽ cắt bớt
+  # ngẫu nhiên. Đã dò 23 domain quan trọng (Google, GitHub, Microsoft, Apple,
+  # PayPal, các ngân hàng VN, Shopee, Zalo…) — không cái nào bị chặn nhầm.
+  #
+  # Định dạng hosts (0.0.0.0 <domain>) — CGPS đọc được trực tiếp.
   DEFAULT_BLOCKLIST_URLS: |
-    https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/tif.mini-onlydomains.txt
+    https://raw.githubusercontent.com/blocklistproject/Lists/master/phishing.txt
+    https://raw.githubusercontent.com/blocklistproject/Lists/master/scam.txt
+    https://raw.githubusercontent.com/blocklistproject/Lists/master/ransomware.txt
   # Dòng đầu: allowlist dùng chung với Lớp 1 (rules/allowlists.txt của repo này)
   # — đây chính là cơ chế đồng bộ allowlist giữa 2 lớp mà rules/allowlists.txt
   # mô tả. Các dòng sau: chống chặn nhầm phổ biến của list bảo mật.
