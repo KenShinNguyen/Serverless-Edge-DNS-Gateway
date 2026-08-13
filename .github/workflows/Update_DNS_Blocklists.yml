@@ -50,18 +50,6 @@ jobs:
           file_pattern: 'rules/*.txt'
           branch: ${{ github.ref }}
 
-      # Health check sau khi push — Cloudflare Pages tự build+deploy khi thấy
-      # commit mới trên nhánh này, nên script tự retry vài lần chờ deploy xong.
-      # Nó kiểm tra cả phân giải bình thường lẫn việc blocklist có thực sự được
-      # nạp (doubleclick.net phải trả NXDOMAIN).
-      #
-      # HEALTHCHECK_ENDPOINT KHÔNG có giá trị mặc định: trước đây mặc định là
-      # sedg.pages.dev — không phải deployment của repo này, nên ai fork về
-      # cũng đi kiểm tra tên miền của người khác. Thiếu biến thì script bỏ qua
-      # êm và in hướng dẫn đặt biến.
-      - name: Health check DoH endpoint
-        if: success()
-        run: scripts/healthcheck.sh
-        env:
-          HEALTHCHECK_ENDPOINT: ${{ vars.HEALTHCHECK_ENDPOINT }}
-          DOH_TOKEN: ${{ secrets.DOH_TOKEN }}
+      # Không có bước health check: workflow này chỉ lo cập nhật list. Việc
+      # deploy do Cloudflare Pages tự làm khi thấy commit mới, và trạng thái
+      # deploy xem trực tiếp ở dashboard Pages.

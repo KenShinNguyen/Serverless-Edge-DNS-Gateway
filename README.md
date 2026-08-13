@@ -33,8 +33,6 @@ A secure, high-performance DNS-over-HTTPS (DoH) proxy running on Cloudflare's gl
 2. Go to the **Actions** tab in your forked repository and click **I understand my workflows, go ahead and enable them**.
 3. Manually select and **Enable** the following workflows: `Update DNS Blocklists` and `Delete Old Workflow Runs`. (`Update Filter Lists` is the optional Layer 2 / CGPS workflow — leave it disabled unless you set up the secrets described [below](#-layer-2-cloudflare-gateway-security-filtering-cgps).)
 
-Optionally set the Actions variable `HEALTHCHECK_ENDPOINT` (Settings > Secrets and variables > Actions > Variables) to your deployment URL, e.g. `https://your-project.pages.dev`. After each list update the workflow then probes the live endpoint and fails if resolution breaks or the blocklist stops being applied. Add the `DOH_TOKEN` secret too if your endpoint requires a token. Without the variable the check is skipped.
-
 ### 2. Deploy to Cloudflare Pages
 1. Go to [Workers & Pages > Create application > Connect to Git](https://dash.cloudflare.com/?to=/:account/pages/new/provider/github).
 2. Connect your GitHub and select the forked repository.
