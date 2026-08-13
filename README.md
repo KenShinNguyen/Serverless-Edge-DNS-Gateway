@@ -116,10 +116,10 @@ Device ──DoH──▶ Pages Function (Layer 1: ads/tracking ~1M domains, ECS
 | Layer | Handles | Lists |
 | :--- | :--- | :--- |
 | Edge (this project) | Ads, tracking, gambling, telemetry | HaGeZi Pro++, AdGuard DNS, etc. (`update_lists.sh`) |
-| Gateway (CGPS) | Malware, phishing, scam (TIF) | HaGeZi TIF Mini ([.github/workflows/Update_Gateway_Security_Lists.yml](.github/workflows/Update_Gateway_Security_Lists.yml)) |
+| Gateway (CGPS) | Phishing, scam, ransomware | blocklistproject phishing + scam + ransomware, ~200k domains ([.github/workflows/Update_Gateway_Security_Lists.yml](.github/workflows/Update_Gateway_Security_Lists.yml)) |
 
 > [!WARNING]
-> **Do not enable this workflow if you already run CGPS elsewhere against the same Cloudflare account** — for example a separate `cloudflare-gateway-pihole-scripts` repo that pushes ad blocklists to Gateway. CGPS hardcodes its list names (`CGPS List - Chunk N`) and rule name (`CGPS Filter Lists`), so two CGPS instances on one account overwrite each other: whichever runs last claims the leading chunks. There is no namespace to keep the two sets apart. The free plan's 300,000-item quota makes it moot anyway — a ~298k ad list plus ~170k TIF is 468k, well over the cap.
+> **Do not enable this workflow if you already run CGPS elsewhere against the same Cloudflare account** — for example a separate `cloudflare-gateway-pihole-scripts` repo that pushes ad blocklists to Gateway. CGPS hardcodes its list names (`CGPS List - Chunk N`) and rule name (`CGPS Filter Lists`), so two CGPS instances on one account overwrite each other: whichever runs last claims the leading chunks. There is no namespace to keep the two sets apart. The free plan's 300,000-item quota makes it moot anyway — a ~298k ad list plus the ~200k security list is ~500k, well over the cap.
 >
 > In that situation, get malware/phishing coverage from the built-in **Security Categories** instead: free, maintained by Cloudflare, and exempt from the 300k quota. This workflow only makes sense when your Gateway is dedicated to security and Layer 1 handles all ad blocking at the edge.
 
