@@ -50,27 +50,43 @@ env:
   NODE_ENV: production
   # Lớp 2 chỉ lo bảo mật: phishing / scam / ransomware.
   #
-  # Trước đây dùng HaGeZi TIF Mini, nhưng toàn bộ repo hagezi/dns-blocklists đã
-  # biến mất khỏi GitHub (raw trả 404 cho cả README lẫn LICENSE; các repo kế
-  # nhiệm hagezi/nrd và hagezi/dns-blocklists-legacy nêu trong thông báo di dời
-  # cũng 404). Nguồn dưới đây thuộc blocklistproject/Lists — đã kiểm chứng
-  # HTTP 200 và soi nội dung thật.
+  # Nguồn thuộc blocklistproject/Lists. Số liệu đo ngày 2026-08-23, cả ba URL
+  # đều trả HTTP 200:
   #
-  # Tổng sau khi gộp và khử trùng lặp: ~200.600 domain, nằm gọn trong quota
-  # 300.000 item của gói Zero Trust Free. CỐ Ý KHÔNG thêm blocklistproject
-  # malware.txt: riêng nó đã 2,66 triệu dòng, vượt xa quota nên CGPS sẽ cắt bớt
-  # ngẫu nhiên. Đã dò 23 domain quan trọng (Google, GitHub, Microsoft, Apple,
-  # PayPal, các ngân hàng VN, Shopee, Zalo…) — không cái nào bị chặn nhầm.
+  #   phishing.txt    190.205 domain
+  #   scam.txt          8.527 domain
+  #   ransomware.txt    1.904 domain
+  #   ────────────────────────────────
+  #   gộp + khử trùng lặp: ~200.600 domain
   #
-  # Định dạng hosts (0.0.0.0 <domain>) — CGPS đọc được trực tiếp.
+  # Nằm gọn trong quota 300.000 item của gói Zero Trust Free. CỐ Ý KHÔNG thêm
+  # blocklistproject malware.txt: riêng nó đã 2,66 triệu dòng, vượt xa quota nên
+  # CGPS sẽ cắt bớt ngẫu nhiên. Đã dò 23 domain quan trọng (Google, GitHub,
+  # Microsoft, Apple, PayPal, các ngân hàng VN, Shopee, Zalo…) — không cái nào
+  # bị chặn nhầm.
+  #
+  # Định dạng hosts (0.0.0.0 <domain>) — CGPS đọc được trực tiếp. Bước
+  # "Verify downloaded lists" bên dưới BẮT BUỘC phải đếm được định dạng này;
+  # xem chú thích ở đó trước khi sửa regex.
+  #
+  # Ghi chú lịch sử: chú thích cũ ở đây nói repo hagezi/dns-blocklists đã biến
+  # mất khỏi GitHub. Điều đó KHÔNG còn đúng — kiểm tra lại ngày 2026-08-23,
+  # raw.githubusercontent.com/hagezi/dns-blocklists trả HTTP 200. Nếu muốn quay
+  # về HaGeZi thì dùng wildcard/tif-onlydomains.txt, nhưng lưu ý list đó hiện có
+  # 2.122.191 domain — gấp 7 lần quota, KHÔNG dùng trực tiếp được.
   DEFAULT_BLOCKLIST_URLS: |
-    https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/hoster-onlydomains.txt
-    https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/spam-tlds-onlydomains.txt
-    https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/anti.piracy-onlydomains.txt
+    https://raw.githubusercontent.com/blocklistproject/Lists/master/phishing.txt
+    https://raw.githubusercontent.com/blocklistproject/Lists/master/scam.txt
+    https://raw.githubusercontent.com/blocklistproject/Lists/master/ransomware.txt
   # Dòng đầu: allowlist dùng chung với Lớp 1 (rules/allowlists.txt của repo này)
   # — đây chính là cơ chế đồng bộ allowlist giữa 2 lớp mà rules/allowlists.txt
-  # mô tả. Các dòng sau: chống chặn nhầm phổ biến của list bảo mật.
- 
+  # mô tả. Dòng sau: chống chặn nhầm phổ biến của list bảo mật (~3.999 domain
+  # ngân hàng). Bước "Download allowlists" tham chiếu biến này, nên KHÔNG xoá nó
+  # mà không sửa luôn bước đó.
+  DEFAULT_ALLOWLIST_URLS: |
+    https://raw.githubusercontent.com/KenShinNguyen/Serverless-Edge-DNS-Gateway/main/rules/allowlists.txt
+    https://raw.githubusercontent.com/AdguardTeam/HttpsExclusions/master/exclusions/banks.txt
+
 jobs:
   # Lớp 2 là tuỳ chọn: repo mới fork về chưa có secrets Cloudflare. Kiểm tra
   # trước để workflow bỏ qua êm thay vì fail đỏ ở bước `cloudflare-create`.
@@ -125,25 +141,76 @@ jobs:
       # thế chỉ tạo ra file rỗng (hoặc chứa trang lỗi) và script vẫn in "Done",
       # nên workflow xanh trong khi Cloudflare Gateway không nhận domain nào —
       # đúng tình trạng đã xảy ra với URL domains/tif.mini.txt trước đây.
+      #
+      # Kiểm tra TỪNG nguồn một, không chỉ tổng: gộp rồi mới đếm thì một nguồn
+      # nhỏ chết đi gần như không làm tổng suy chuyển, và thông báo lỗi cũng
+      # không chỉ ra được URL nào hỏng.
       - name: Verify downloaded lists
         env:
+          BLOCKLIST_URLS: ${{ vars.BLOCKLIST_URLS || env.DEFAULT_BLOCKLIST_URLS }}
           MIN_BLOCK_DOMAINS: ${{ vars.MIN_BLOCK_DOMAINS || '50000' }}
+          MIN_PER_SOURCE: ${{ vars.MIN_PER_SOURCE || '500' }}
         run: |
-          set -euo pipefail
+          # GitHub chạy block này bằng `bash -e`, nghĩa là script dừng ngay ở
+          # lệnh đầu tiên trả non-zero. Ở đây ta MUỐN kiểm tra hết mọi nguồn rồi
+          # mới báo lỗi một thể, nên tắt -e và tự gom kết quả vào $fail.
+          set +e
+          set -uo pipefail
+
+          # Đếm được CẢ HAI định dạng mà CGPS ghi thẳng ra file:
+          #
+          #   bare   : example.com
+          #   hosts  : 0.0.0.0 example.com   /   127.0.0.1 example.com
+          #
+          # Regex cũ chỉ khớp bare, nên mọi nguồn định dạng hosts (toàn bộ
+          # blocklistproject/Lists) đều bị đếm thành 0 và workflow báo nhầm là
+          # "URL nguồn đã hỏng (404/403)" trong khi nguồn vẫn trả HTTP 200.
+          #
+          # Nhãn cuối phải bắt đầu bằng chữ cái: nếu không thì dòng chỉ thị
+          # trống trong file hosts ("0.0.0.0") lại bị tính là một domain.
+          DOMAIN_RE='^((0\.0\.0\.0|127\.0\.0\.1)[[:space:]]+)?([a-z0-9]([a-z0-9_-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[[:space:]]*$'
+
           count_domains() {
             [ -f "$1" ] || { echo 0; return; }
-            grep -ciE '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$' "$1" || true
+            grep -ciE "$DOMAIN_RE" "$1" || true
           }
+
+          fail=0
+
+          # 1) Từng nguồn blocklist: phải trả HTTP 2xx và đóng góp đủ domain.
+          while IFS= read -r url; do
+            url=$(printf '%s' "$url" | tr -d '[:space:]')
+            if [ -z "$url" ]; then continue; fi
+            code=$(curl -sS -o src.tmp -w '%{http_code}' \
+                     --connect-timeout 30 --max-time 300 --compressed -L "$url" || echo 000)
+            n=$(count_domains src.tmp)
+            if [ "$code" != "200" ]; then
+              echo "::error::Nguồn trả HTTP $code — $url"
+              fail=1
+            elif [ "$n" -lt "$MIN_PER_SOURCE" ]; then
+              echo "::error::Nguồn chỉ có $n domain (< $MIN_PER_SOURCE) — $url"
+              fail=1
+            else
+              echo "✅ $n domain — $url"
+            fi
+            rm -f src.tmp
+          done <<< "$BLOCKLIST_URLS"
+
+          # 2) Tổng sau khi CGPS gộp: chốt chặn cuối, bắt cả lỗi ở khâu gộp.
           block=$(count_domains blocklist.txt)
           allow=$(count_domains allowlist.txt)
+          echo "─────────────────────────────────────────"
           echo "blocklist.txt: $block domain | allowlist.txt: $allow domain"
+
           if [ "$block" -lt "$MIN_BLOCK_DOMAINS" ]; then
-            echo "::error::Blocklist chỉ có $block domain (< $MIN_BLOCK_DOMAINS) — nhiều khả năng URL nguồn đã hỏng (404/403). Dừng lại để không đẩy danh sách rỗng lên Cloudflare Gateway."
-            exit 1
+            echo "::error::Blocklist gộp chỉ có $block domain (< $MIN_BLOCK_DOMAINS). Nếu từng nguồn ở trên đều ✅ thì lỗi nằm ở khâu gộp của CGPS, không phải ở URL nguồn."
+            fail=1
           fi
           if [ "$allow" -eq 0 ]; then
             echo "::warning::Allowlist rỗng — nguồn allowlist có thể đã hỏng. Vẫn tiếp tục vì allowlist chỉ ảnh hưởng phần ngoại lệ."
           fi
+
+          exit $fail
 
       - name: Create or update rules and lists
         run: npm run cloudflare-create
