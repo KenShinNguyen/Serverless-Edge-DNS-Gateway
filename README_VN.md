@@ -19,6 +19,7 @@ Dịch vụ DNS-over-HTTPS (DoH) bảo mật, hiệu năng cao, chạy trên h�
 *   **Lớp bảo vệ TLD nội bộ**: Ngăn rò rỉ các domain nội bộ (như `.local`, `.lan`, trang quản trị router) ra môi trường internet bằng cách trả về `NXDOMAIN` ngay lập tức.
 *   **Điều hướng DNS (CNAME Injection)**: Công cụ ép định tuyến domain A sang domain B bằng bản ghi CNAME. Giúp tùy chỉnh chính xác cụm máy chủ CDN mong muốn (Bilibili, TikTok, Medium...).
 *   **Cài đặt không cần App**: Hỗ trợ tạo file `.mobileconfig` chính chủ cho Apple và tích hợp trang Landing Page trực quan.
+*   **Cache phản hồi**: Mỗi câu trả lời kèm header `Cache-Control` lấy từ TTL của bản ghi (RFC 8484 §5.1, giới hạn tối đa 1 giờ), để client và edge của Cloudflare tái sử dụng thay vì tiêu tốn request của gói miễn phí.
 
 ---
 
@@ -157,5 +158,28 @@ Thiết bị ──DoH──▶ Pages Function (Lớp 1: quảng cáo/tracking ~
 
 > [!NOTE]
 > Khi đã đặt `DOH_TOKEN`, thêm token vào mọi endpoint: `/dns-query/<token>`, `/debug/<token>`, `/apple/<token>`. File cấu hình Apple sinh ra sẽ tự động nhúng URL kèm token.
+
+`/dns-query` nhận cả `POST` (body `application/dns-message`) lẫn `GET` (`?dns=<base64url>`) theo RFC 8484. Truy vấn ngắn hơn một header DNS, có cờ `QR=1`, hoặc không chứa câu hỏi nào sẽ bị trả `400` ngay tại edge, trước khi tốn một request lên upstream.
+
+---
+
+## 🧪 Phát triển & kiểm thử
+
+Toàn bộ tầng DNS trong [functions/[[path]].js](functions/[[path]].js) là parser và serializer wire-format viết tay, nên repo có sẵn bộ test đi kèm. Không cần cài gì cả — dự án cố ý giữ thiết kế zero-build để Cloudflare Pages deploy thẳng từ thư mục gốc, và test runner có sẵn trong Node (từ Node 18) là đủ:
+
+```bash
+node --test 'test/*.test.mjs'
+```
+
+| File | Phạm vi kiểm thử |
+| :--- | :--- |
+| `test/wire.test.mjs` | Duyệt nhãn/tên miền, phân tích question, và các phản hồi tự sinh NXDOMAIN / NODATA / SERVFAIL. |
+| `test/filtering.test.mjs` | Thứ tự ưu tiên blocklist/allowlist, so khớp hậu tố TLD nội bộ và Mullvad, phân tích file list. |
+| `test/caching.test.mjs` | Trích xuất TTL và header `Cache-Control` sinh ra từ đó. |
+| `test/ecs.test.mjs` | Chèn ECS, che bit thừa của prefix, thay thế bản ghi OPT, loại bỏ IP client sai định dạng. |
+| `test/redirect.test.mjs` | Ghi đè QNAME và dựng phản hồi CNAME. |
+| `test/handler.test.mjs` | Định tuyến đầu-cuối: chặn bằng token, failover, geo-bypass, `/debug`, `/apple`, CORS. |
+
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) chạy bộ test này trên mỗi pull request, kèm `shellcheck` cho `update_lists.sh` và kiểm tra định dạng các file rule tự biên soạn.
 
 ---

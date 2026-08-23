@@ -30,6 +30,15 @@ let CORS_ORIGIN = '';
 // Refresh interval for ALL lists (blocklist, allowlists, private TLDs, redirect rules)
 const ALL_LISTS_REFRESH_INTERVAL = 21600000; // 6 hour
 
+// Upper bound on the Cache-Control max-age we advertise, regardless of what an
+// upstream claims. Some resolvers hand out multi-day TTLs; honouring those
+// would keep a client pinned to a stale answer long after a CDN moved.
+const MAX_RESPONSE_TTL = 3600; // 1 hour
+// Locally synthesised answers (blocked, private TLD, blocked QTYPE) have no
+// upstream TTL. Short enough that a list change takes effect quickly, long
+// enough that a chatty client is not re-asking about the same ad domain.
+const LOCAL_RESPONSE_TTL = 300; // 5 minutes
+
 const AD_BLOCK_ENABLED = true;
 const BLOCKLIST_URL = '/rules/blocklists.txt';
 const ALLOWLIST_URL = '/rules/allowlists.txt';
@@ -119,35 +128,63 @@ let blocklistPromise = null;
 let blocklistsFetched = false; // Track if lists have been fetched at least once
 
 // ==================== AD BLOCK ====================
+// Walk a list body one line at a time, invoking `onLine` for each non-empty,
+// non-comment line.
+//
+// Deliberately NOT `text.split('\n')`: blocklists.txt is ~14 MB / ~790k lines,
+// and split() materialises every one of those lines as a live string before a
+// single entry is consumed. Together with the source text and the resulting
+// Set that is three copies of the list alive at once inside a 128 MB isolate.
+// Scanning with indexOf keeps only one line alive at a time, so peak memory is
+// the source text plus the Set.
+function forEachListLine(text, onLine) {
+  let start = 0;
+  while (start <= text.length) {
+    let end = text.indexOf('\n', start);
+    if (end === -1) end = text.length;
+    let line = text.slice(start, end);
+    start = end + 1;
+    // Tolerate CRLF sources without paying for a trim() on every line
+    if (line.charCodeAt(line.length - 1) === 13) line = line.slice(0, -1);
+    if (!line) continue;
+    const first = line.charCodeAt(0);
+    // '#' (35) and '!' (33) start comments; skip before any further work
+    if (first === 35 || first === 33) continue;
+    if (first === 32 || first === 9) {
+      line = line.trim();
+      if (!line || line[0] === '#' || line[0] === '!') continue;
+    }
+    onLine(line);
+  }
+}
+
+// Returns null (not an empty Set) when the list could not be fetched, so
+// callers can tell "source is down" apart from "source is legitimately empty".
 async function fetchList(url) {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
-    if (!res.ok) return new Set();
+    if (!res.ok) return null;
     const text = await res.text();
     const domains = new Set();
-    for (const line of text.split('\n')) {
-      // Lowercase so mixed-case entries still match (queries are lowercased)
-      const d = line.trim().toLowerCase();
-      if (d && !d.startsWith('#') && !d.startsWith('!')) domains.add(d);
-    }
+    // Lowercase so mixed-case entries still match (queries are lowercased)
+    forEachListLine(text, (line) => domains.add(line.toLowerCase()));
     return domains;
-  } catch { return new Set(); }
+  } catch { return null; }
 }
 
+// Returns null on fetch failure — see fetchList.
 async function fetchRedirectRules(url) {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
-    if (!res.ok) return new Map();
+    if (!res.ok) return null;
     const text = await res.text();
     const rules = new Map();
-    for (const line of text.split('\n')) {
-      const d = line.trim();
-      if (!d || d.startsWith('#') || d.startsWith('!')) continue;
-      const parts = d.split(/\s+/);
+    forEachListLine(text, (line) => {
+      const parts = line.split(/\s+/);
       if (parts.length === 2) rules.set(parts[0].toLowerCase(), parts[1].toLowerCase());
-    }
+    });
     return rules;
-  } catch { return new Map(); }
+  } catch { return null; }
 }
 
 async function refreshBlocklists(baseUrl) {
@@ -174,18 +211,55 @@ async function refreshBlocklists(baseUrl) {
         MULLVAD_UPSTREAM_ENABLED ? fetchList(mUrl) : Promise.resolve(new Set())
       ]);
 
-      // Always update state, even if lists are empty (to prevent infinite re-fetch)
-      if (AD_BLOCK_ENABLED) { adBlocklist = block; adAllowlist = allow; }
-      if (BLOCK_PRIVATE_TLD) { privateTlds = privateList; }
-      if (DNS_REDIRECT_ENABLED) { redirectRules = redirRules; }
-      if (MULLVAD_UPSTREAM_ENABLED) { mullvadUpstreamDomains = mullvadList; }
+      // Only install a list we actually fetched. fetchList returns null when the
+      // source is unreachable, and overwriting a good list with an empty one
+      // would silently disable filtering until the next interval elapses — one
+      // blip in serving rules/blocklists.txt would unblock every ad domain for
+      // six hours. A stale list is strictly better than no list.
+      if (AD_BLOCK_ENABLED) {
+        if (block) adBlocklist = block;
+        if (allow) adAllowlist = allow;
+      }
+      if (BLOCK_PRIVATE_TLD && privateList) privateTlds = privateList;
+      if (DNS_REDIRECT_ENABLED && redirRules) redirectRules = redirRules;
+      if (MULLVAD_UPSTREAM_ENABLED && mullvadList) mullvadUpstreamDomains = mullvadList;
 
+      // Timestamp advances even on failure: retrying every request while a
+      // source is down would stampede the origin. The next interval retries.
       blocklistLastFetch = Date.now();
       blocklistsFetched = true; // Mark as fetched to prevent infinite re-fetch
     } finally { blocklistPromise = null; }
   })();
 
   return blocklistPromise;
+}
+
+// ==================== DNS WIRE FORMAT ====================
+// Advance past a wire-format domain name (RFC 1035 §4.1.4).
+// Returns the offset just past the name, or -1 if the name runs off the end
+// of the buffer. Every section walk in this file goes through here so a
+// truncated message fails loudly in one place instead of silently producing
+// out-of-range offsets.
+function skipName(v, off) {
+  while (off < v.length) {
+    const len = v[off];
+    if (len === 0) return off + 1;
+    // A compression pointer is always the last two bytes of a name
+    if ((len & 0xC0) === 0xC0) return off + 2 <= v.length ? off + 2 : -1;
+    off += len + 1;
+  }
+  return -1;
+}
+
+// Offset just past the question section, or -1 if the message is truncated
+function skipQuestions(v, qdcount) {
+  let off = 12;
+  for (let i = 0; i < qdcount; i++) {
+    off = skipName(v, off);
+    if (off < 0 || off + 4 > v.length) return -1;
+    off += 4; // QTYPE + QCLASS
+  }
+  return off;
 }
 
 // Extract QTYPE from first question section
@@ -195,14 +269,8 @@ function extractQtype(buf) {
     if (v.length < 12) return null;
     const qd = (v[4] << 8) | v[5];
     if (qd === 0) return null;
-    let off = 12;
-    while (off < v.length) {
-      const len = v[off];
-      if (len === 0) { off++; break; }
-      if ((len & 0xC0) === 0xC0) { off += 2; break; }
-      off += len + 1;
-    }
-    if (off + 2 > v.length) return null;
+    const off = skipName(v, 12);
+    if (off < 0 || off + 2 > v.length) return null;
     return (v[off] << 8) | v[off + 1];
   } catch { return null; }
 }
@@ -240,6 +308,7 @@ function extractAllDomains(buf) {
         labels.push(label);
         off += len;
       }
+      if (off + 4 > v.length) break; // truncated question — drop the partial record
       off += 4; // QTYPE + QCLASS
       if (labels.length > 0) domains.push(labels.join('.').toLowerCase());
     }
@@ -255,32 +324,18 @@ function hasLoopbackInAnswer(buf) {
     const an = (v[6] << 8) | v[7];
     if (an === 0) return false;
 
-    let off = 12;
-    // Skip Question Section
-    for (let i = 0; i < qd; i++) {
-      while (off < v.length) {
-        const len = v[off];
-        if (len === 0) { off++; break; }
-        if ((len & 0xC0) === 0xC0) { off += 2; break; }
-        off += len + 1;
-      }
-      off += 4; // Type + Class
-    }
+    let off = skipQuestions(v, qd);
+    if (off < 0) return false;
 
     // Parse Answer Section
     for (let i = 0; i < an; i++) {
-      // Skip Name (can be compressed)
-      while (off < v.length) {
-        const len = v[off];
-        if (len === 0) { off++; break; }
-        if ((len & 0xC0) === 0xC0) { off += 2; break; }
-        off += len + 1;
-      }
-      if (off + 10 > v.length) break;
+      off = skipName(v, off);
+      if (off < 0 || off + 10 > v.length) break;
       const type = (v[off] << 8) | v[off + 1];
       const cls = (v[off + 2] << 8) | v[off + 3];
       const rdlen = (v[off + 8] << 8) | v[off + 9];
       off += 10;
+      if (off + rdlen > v.length) break; // truncated rdata — stop rather than read past the end
       if (type === 1 && cls === 1 && rdlen === 4) { // Type A, Class IN, Length 4
         if (v[off] === 127 && v[off + 1] === 0 && v[off + 2] === 0 && v[off + 3] === 1) return true;
       }
@@ -288,6 +343,50 @@ function hasLoopbackInAnswer(buf) {
     }
   } catch { }
   return false;
+}
+
+// Smallest TTL across every resource record in a response, or null when the
+// response carries none. RFC 8484 §5.1 ties the HTTP freshness lifetime of a
+// DoH response to this value: cache for longer and a client keeps serving a
+// record the authoritative server has already expired.
+function minResponseTtl(buf) {
+  try {
+    const v = new Uint8Array(buf);
+    if (v.length < 12) return null;
+    const qd = (v[4] << 8) | v[5];
+    const rrCount = ((v[6] << 8) | v[7]) + ((v[8] << 8) | v[9]) + ((v[10] << 8) | v[11]);
+    let off = skipQuestions(v, qd);
+    if (off < 0) return null;
+    let min = null;
+    for (let i = 0; i < rrCount; i++) {
+      off = skipName(v, off);
+      if (off < 0 || off + 10 > v.length) break;
+      const type = (v[off] << 8) | v[off + 1];
+      const ttl = ((v[off + 4] << 24) | (v[off + 5] << 16) | (v[off + 6] << 8) | v[off + 7]) >>> 0;
+      const rdlen = (v[off + 8] << 8) | v[off + 9];
+      off += 10 + rdlen;
+      if (off > v.length) break;
+      // OPT (RFC 6891) reuses the TTL field for flags and an extended RCODE —
+      // reading it as a lifetime would pin max-age to whatever those bits spell
+      if (type === 41) continue;
+      if (min === null || ttl < min) min = ttl;
+    }
+    return min;
+  } catch { return null; }
+}
+
+// Response headers for a DNS message, with the freshness lifetime derived from
+// the record TTLs. Caching matters here beyond politeness to the upstream: the
+// Pages free tier bills every request against a 100k/day quota, and without a
+// Cache-Control header neither the client nor Cloudflare's edge cache will
+// reuse an answer.
+// `body` is either a response buffer to read TTLs out of, an explicit TTL in
+// seconds for a locally synthesised answer, or null for "must not be reused".
+function dnsHeaders(cors, body, extra) {
+  const ttl = body === null || typeof body === 'number' ? body : minResponseTtl(body);
+  const headers = { ...cors, ...extra, 'Content-Type': 'application/dns-message' };
+  headers['Cache-Control'] = ttl === null ? 'no-store' : `max-age=${Math.min(ttl, MAX_RESPONSE_TTL)}`;
+  return headers;
 }
 
 // Suffix ("wildcard") match, most-specific-wins.
@@ -345,87 +444,37 @@ function isMullvadDomain(domain) {
   return false;
 }
 
-// Build NXDOMAIN response (RCODE=3) - Domain does not exist
-// Mirrors query flags (Opcode, AA, TC, RD) per RFC 1035
-function buildNxdomain(query) {
+// Answer-less reply that echoes the question back with the given RCODE.
+// Mirrors the query's ID and Opcode/AA/TC/RD flags per RFC 1035 §4.1.1, so a
+// resolver can match it to the outstanding query. A query too short or too
+// truncated to carry a readable question gets a bare header SERVFAIL — the
+// only honest answer when we could not parse what was asked.
+function buildEmptyResponse(query, rcode) {
   const v = new Uint8Array(query);
-  if (v.length < 12) {
-    // Malformed query → SERVFAIL
+  const qEnd = v.length >= 12 ? skipQuestions(v, 1) : -1;
+  if (qEnd < 0) {
     const sf = new Uint8Array(12);
-    sf[2] = 0x84; sf[3] = 0x82; // QR=1, Opcode=0, AA=1, TC=0, RD=0, RA=1, RCODE=2
-    return sf.buffer;
+    sf.set(v.subarray(0, Math.min(v.length, 2))); // keep the query ID if we have one
+    sf[2] = 0x84; sf[3] = 0x82; // QR=1, AA=1, RA=1, RCODE=2 (SERVFAIL)
+    return sf.buffer;           // QDCOUNT=0 — no question we could echo back
   }
-  let qEnd = 12;
-  while (qEnd < v.length) {
-    const len = v[qEnd];
-    if (len === 0) { qEnd++; break; }
-    if ((len & 0xC0) === 0xC0) { qEnd += 2; break; }
-    qEnd += len + 1;
-  }
-  qEnd += 4; // QTYPE + QCLASS
   const res = new Uint8Array(qEnd);
-  res.set(v.slice(0, qEnd));
+  res.set(v.subarray(0, qEnd));
   res[2] = 0x80 | (v[2] & 0x7F); // QR=1, mirror Opcode/AA/TC/RD from query
-  res[3] = 0x80 | 0x03;           // RA=1, RCODE=3 (NXDOMAIN)
-  res[4] = 0; res[5] = 1; // QDCOUNT=1
-  res[6] = 0; res[7] = 0; // ANCOUNT=0
-  res[8] = 0; res[9] = 0; // NSCOUNT=0
+  res[3] = 0x80 | (rcode & 0x0F); // RA=1
+  res[4] = 0; res[5] = 1;   // QDCOUNT=1
+  res[6] = 0; res[7] = 0;   // ANCOUNT=0
+  res[8] = 0; res[9] = 0;   // NSCOUNT=0
   res[10] = 0; res[11] = 0; // ARCOUNT=0
   return res.buffer;
 }
 
-// NODATA response: RCODE=0 (NOERROR), ANCOUNT=0 — domain exists but no records of this type
-function buildNodata(query) {
-  const v = new Uint8Array(query);
-  if (v.length < 12) {
-    const sf = new Uint8Array(12);
-    sf[2] = 0x84; sf[3] = 0x80;
-    return sf.buffer;
-  }
-  let qEnd = 12;
-  while (qEnd < v.length) {
-    const len = v[qEnd];
-    if (len === 0) { qEnd++; break; }
-    if ((len & 0xC0) === 0xC0) { qEnd += 2; break; }
-    qEnd += len + 1;
-  }
-  qEnd += 4;
-  const res = new Uint8Array(qEnd);
-  res.set(v.slice(0, qEnd));
-  res[2] = 0x80 | (v[2] & 0x7F); // QR=1, mirror flags
-  res[3] = 0x80;                  // RA=1, RCODE=0 (NOERROR)
-  res[4] = 0; res[5] = 1;
-  res[6] = 0; res[7] = 0; // ANCOUNT=0
-  res[8] = 0; res[9] = 0;
-  res[10] = 0; res[11] = 0;
-  return res.buffer;
-}
-
-function buildServfail(query) {
-  const v = new Uint8Array(query);
-  if (v.length < 12) {
-    const sf = new Uint8Array(12);
-    sf[2] = 0x84; sf[3] = 0x82; // QR=1, AA=1, RA=1, RCODE=2
-    return sf.buffer;
-  }
-  let qEnd = 12;
-  while (qEnd < v.length) {
-    const len = v[qEnd];
-    if (len === 0) { qEnd++; break; }
-    if ((len & 0xC0) === 0xC0) { qEnd += 2; break; }
-    qEnd += len + 1;
-  }
-  qEnd += 4;
-  const res = new Uint8Array(qEnd);
-  res.set(v.slice(0, qEnd));
-  res[2] = 0x80 | (v[2] & 0x7F); // QR=1, mirror Opcode/AA/TC/RD
-  res[3] = 0x80 | 0x02;           // RA=1, RCODE=2 (SERVFAIL)
-  res[4] = 0; res[5] = 1;
-  res[6] = 0; res[7] = 0;
-  res[8] = 0; res[9] = 0;
-  res[10] = 0; res[11] = 0;
-  return res.buffer;
-}
+// NXDOMAIN: the domain does not exist. Used for blocked and private-TLD names.
+const buildNxdomain = (query) => buildEmptyResponse(query, 3);
+// NODATA: NOERROR with ANCOUNT=0 — the name exists, but not for this QTYPE.
+const buildNodata = (query) => buildEmptyResponse(query, 0);
+// SERVFAIL: we could not get an answer from any upstream.
+const buildServfail = (query) => buildEmptyResponse(query, 2);
 
 // ==================== ECS INJECTION ====================
 // Inject EDNS Client Subnet (ECS) into DNS query per RFC 7871
@@ -436,8 +485,11 @@ function injectECS(query, clientIP) {
     const v = new Uint8Array(query);
     if (v.length < 12) return query;
 
-    // Strip existing OPT records
+    // Strip existing OPT records. A null result means the message could not be
+    // parsed far enough to find them — appending our own OPT on top of one we
+    // failed to remove would produce two OPT records, which is a FORMERR.
     const clean = stripOPT(v);
+    if (!clean) return query;
 
     // Handle IPv4-mapped IPv6 addresses (::ffff:x.x.x.x)
     const ipv4Mapped = clientIP.match(IPV4_MAPPED_REGEX);
@@ -455,8 +507,18 @@ function injectECS(query, clientIP) {
       family = 1; prefixLen = ECS_PREFIX_V4;
       const parts = clientIP.split('.');
       if (parts.length !== 4) return query;
+      // Validate every octet, not just the ones we keep: a malformed tail
+      // means the header is not an address at all, and Number('') is 0, so
+      // unchecked input would silently ship a bogus subnet to the upstream.
+      const octets = [];
+      for (const part of parts) {
+        if (!/^\d{1,3}$/.test(part)) return query;
+        const n = Number(part);
+        if (n > 255) return query;
+        octets.push(n);
+      }
       const byteLen = Math.ceil(prefixLen / 8);
-      addrBytes = parts.slice(0, byteLen).map(Number);
+      addrBytes = octets.slice(0, byteLen);
     }
 
     // Mask unused trailing bits per RFC 7871 (e.g., /24 prefix → mask last byte)
@@ -496,31 +558,22 @@ function injectECS(query, clientIP) {
   } catch { return query; }
 }
 
-// Strip existing OPT (EDNS) records from DNS query
-// Validates rdata bounds and correctly rebuilds ARCOUNT
+// Strip existing OPT (EDNS) records from a DNS query.
+// Validates rdata bounds and correctly rebuilds ARCOUNT.
+// Returns null when the message is too truncated to locate the AR section, so
+// the caller can leave the query alone instead of rebuilding it from garbage.
 function stripOPT(view) {
-  let off = 12;
   const qd = (view[4] << 8) | view[5];
-  for (let i = 0; i < qd && off < view.length; i++) {
-    while (off < view.length) {
-      const l = view[off];
-      if (l === 0) { off++; break; }
-      if ((l & 0xC0) === 0xC0) { off += 2; break; }
-      off += l + 1;
-    }
-    off += 4;
-  }
+  let off = skipQuestions(view, qd);
+  if (off < 0) return null; // truncated question section
   const an = (view[6] << 8) | view[7];
   const ns = (view[8] << 8) | view[9];
-  for (let i = 0; i < an + ns && off < view.length; i++) {
-    while (off < view.length) {
-      const l = view[off];
-      if (l === 0) { off++; break; }
-      if ((l & 0xC0) === 0xC0) { off += 2; break; }
-      off += l + 1;
-    }
-    if (off + 10 > view.length) break;
-    off += 10 + ((view[off + 8] << 8) | view[off + 9]);
+  for (let i = 0; i < an + ns; i++) {
+    off = skipName(view, off);
+    if (off < 0 || off + 10 > view.length) return null;
+    const rdlen = (view[off + 8] << 8) | view[off + 9];
+    off += 10 + rdlen;
+    if (off > view.length) return null; // rdata overruns the buffer
   }
   // Parse AR section: iterate each record, keep non-OPT, drop TYPE=41
   const ar = (view[10] << 8) | view[11];
@@ -528,14 +581,8 @@ function stripOPT(view) {
   const keptRecords = [];
   for (let i = 0; i < ar && arOff < view.length; i++) {
     const recStart = arOff;
-    // Skip Name
-    while (arOff < view.length) {
-      const l = view[arOff];
-      if (l === 0) { arOff++; break; }
-      if ((l & 0xC0) === 0xC0) { arOff += 2; break; }
-      arOff += l + 1;
-    }
-    if (arOff + 10 > view.length) break;
+    arOff = skipName(view, arOff);
+    if (arOff < 0 || arOff + 10 > view.length) break;
     const type = (view[arOff] << 8) | view[arOff + 1];
     const rdlen = (view[arOff + 8] << 8) | view[arOff + 9];
     // Validate rdata length fits within buffer bounds
@@ -643,13 +690,8 @@ function decodeName(v, startOff) {
 function rewriteQname(query, targetDomain) {
   const v = new Uint8Array(query);
   if (v.length < 12) return query;
-  let qnameEnd = 12;
-  while (qnameEnd < v.length) {
-    const len = v[qnameEnd];
-    if (len === 0) { qnameEnd++; break; }
-    if ((len & 0xC0) === 0xC0) { qnameEnd += 2; break; }
-    qnameEnd += len + 1;
-  }
+  const qnameEnd = skipName(v, 12);
+  if (qnameEnd < 0) return query;
   const targetWire = encodeDomainName(targetDomain);
   const afterQname = v.subarray(qnameEnd);
   const result = new Uint8Array(12 + targetWire.length + afterQname.length);
@@ -659,7 +701,7 @@ function rewriteQname(query, targetDomain) {
   return result.buffer;
 }
 
-function buildRedirectResponse(originalQuery, upstreamResponse, originalDomain, targetDomain) {
+function buildRedirectResponse(originalQuery, upstreamResponse, targetDomain) {
   const uv = new Uint8Array(upstreamResponse);
   const qv = new Uint8Array(originalQuery);
   if (uv.length < 12 || qv.length < 12) return upstreamResponse;
@@ -703,8 +745,7 @@ function buildRedirectResponse(originalQuery, upstreamResponse, originalDomain, 
     uOff += rdlen;
   }
 
-  let oQEnd = 12;
-  oQEnd = decodeName(qv, 12).nextOff + 4;
+  const oQEnd = decodeName(qv, 12).nextOff + 4;
 
   const targetWire = encodeDomainName(targetDomain);
   const cnameSize = 2 + 10 + targetWire.length;
@@ -831,12 +872,20 @@ async function handleDNSQuery(request, context) {
     return new Response('Method not allowed', { status: 405, headers: cors });
   }
 
+  // Reject anything that is not a well-formed query before it costs an upstream
+  // request: a bare header is 12 bytes, QR=0 marks a query rather than a
+  // response, and a query with no question has nothing to resolve.
+  const head = new Uint8Array(query);
+  if (head.length < 12 || (head[2] & 0x80) !== 0 || ((head[4] << 8) | head[5]) === 0) {
+    return new Response('Malformed DNS query', { status: 400, headers: cors });
+  }
+
   // Block unwanted query types early to save upstream requests
   if (BLOCKED_QTYPES.size > 0) {
     const qtype = extractQtype(query);
     if (qtype !== null && BLOCKED_QTYPES.has(qtype)) {
       return new Response(buildNodata(query), {
-        headers: { ...cors, 'Content-Type': 'application/dns-message', 'X-Blocked-Type': String(qtype) }
+        headers: dnsHeaders(cors, LOCAL_RESPONSE_TTL, { 'X-Blocked-Type': String(qtype) })
       });
     }
   }
@@ -856,11 +905,11 @@ async function handleDNSQuery(request, context) {
         try {
           const data = await forwardQuery(query, UPSTREAM_GEO_BYPASS);
           return new Response(data, {
-            headers: { ...cors, 'Content-Type': 'application/dns-message', 'X-Upstream': 'Mullvad' }
+            headers: dnsHeaders(cors, data, { 'X-Upstream': 'Mullvad' })
           });
         } catch {
           return new Response(buildServfail(query), {
-            headers: { ...cors, 'Content-Type': 'application/dns-message', 'X-Upstream': 'Mullvad-Failed' }
+            headers: dnsHeaders(cors, null, { 'X-Upstream': 'Mullvad-Failed' })
           });
         }
       }
@@ -868,14 +917,14 @@ async function handleDNSQuery(request, context) {
       // Private TLD check (NXDOMAIN)
       if (BLOCK_PRIVATE_TLD && isDomainPrivate(domain)) {
         return new Response(buildNxdomain(query), {
-          headers: { ...cors, 'Content-Type': 'application/dns-message', 'X-Blocked-Private': domain }
+          headers: dnsHeaders(cors, LOCAL_RESPONSE_TTL, { 'X-Blocked-Private': domain })
         });
       }
 
       // Ad block check (NXDOMAIN)
       if (AD_BLOCK_ENABLED && isDomainBlocked(domain)) {
         return new Response(buildNxdomain(query), {
-          headers: { ...cors, 'Content-Type': 'application/dns-message', 'X-Blocked': domain }
+          headers: dnsHeaders(cors, LOCAL_RESPONSE_TTL, { 'X-Blocked': domain })
         });
       }
 
@@ -885,9 +934,9 @@ async function handleDNSQuery(request, context) {
         try {
           const rewritten = rewriteQname(query, targetDomain);
           const upstreamData = await resolveQuery(rewritten, clientIP);
-          const redirected = buildRedirectResponse(query, upstreamData, domain, targetDomain);
+          const redirected = buildRedirectResponse(query, upstreamData, targetDomain);
           return new Response(redirected, {
-            headers: { ...cors, 'Content-Type': 'application/dns-message', 'X-Redirected': `${domain} -> ${targetDomain}` }
+            headers: dnsHeaders(cors, redirected, { 'X-Redirected': `${domain} -> ${targetDomain}` })
           });
         } catch {
           // Redirect failed, fall through to normal resolution
@@ -899,9 +948,7 @@ async function handleDNSQuery(request, context) {
   // Forward to upstream
   try {
     const data = await resolveQuery(query, clientIP);
-    return new Response(data, {
-      headers: { ...cors, 'Content-Type': 'application/dns-message' }
-    });
+    return new Response(data, { headers: dnsHeaders(cors, data) });
   } catch {
     return new Response('Upstream error', { status: 502, headers: cors });
   }
@@ -1009,3 +1056,49 @@ async function handleRequest(request, context) {
 export async function onRequest(context) {
   return handleRequest(context.request, context);
 }
+
+// Internal helpers exposed for the test suite in test/. Cloudflare Pages only
+// looks at the onRequest* exports, so this is inert at runtime.
+export const __internals = {
+  skipName,
+  skipQuestions,
+  extractQtype,
+  extractAllDomains,
+  hasLoopbackInAnswer,
+  minResponseTtl,
+  dnsHeaders,
+  buildEmptyResponse,
+  buildNxdomain,
+  buildNodata,
+  buildServfail,
+  isDomainBlocked,
+  isDomainPrivate,
+  isMullvadDomain,
+  injectECS,
+  stripOPT,
+  ipv6ToBytes,
+  encodeDomainName,
+  decodeName,
+  rewriteQname,
+  buildRedirectResponse,
+  forEachListLine,
+  maskUpstream,
+  tokenMatches,
+  LOCAL_RESPONSE_TTL,
+  MAX_RESPONSE_TTL,
+  // Test-only accessors for the module-level filter state
+  __setState({ block, allow, priv, redirect, mullvad }) {
+    if (block) adBlocklist = block;
+    if (allow) adAllowlist = allow;
+    if (priv) privateTlds = priv;
+    if (redirect) redirectRules = redirect;
+    if (mullvad) mullvadUpstreamDomains = mullvad;
+  },
+  __resetState() {
+    adBlocklist = new Set();
+    adAllowlist = new Set();
+    privateTlds = new Set();
+    redirectRules = new Map();
+    mullvadUpstreamDomains = new Set();
+  }
+};

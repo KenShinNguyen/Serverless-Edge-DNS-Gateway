@@ -1,0 +1,9 @@
+# Các file trong rules/ được edge function đọc theo từng dòng. Ép LF để một
+# lần commit từ Windows không chèn CR vào cuối mỗi domain — parser có xử lý CR,
+# nhưng dữ liệu trong repo nên nhất quán.
+*.txt text eol=lf
+*.js  text eol=lf
+*.mjs text eol=lf
+*.sh  text eol=lf
+*.yml text eol=lf
+*.md  text eol=lf
