@@ -64,16 +64,13 @@ env:
   #
   # Định dạng hosts (0.0.0.0 <domain>) — CGPS đọc được trực tiếp.
   DEFAULT_BLOCKLIST_URLS: |
-    https://raw.githubusercontent.com/blocklistproject/Lists/master/phishing.txt
-    https://raw.githubusercontent.com/blocklistproject/Lists/master/scam.txt
-    https://raw.githubusercontent.com/blocklistproject/Lists/master/ransomware.txt
+    https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/hoster-onlydomains.txt
+    https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/spam-tlds-onlydomains.txt
+    https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/anti.piracy-onlydomains.txt
   # Dòng đầu: allowlist dùng chung với Lớp 1 (rules/allowlists.txt của repo này)
   # — đây chính là cơ chế đồng bộ allowlist giữa 2 lớp mà rules/allowlists.txt
   # mô tả. Các dòng sau: chống chặn nhầm phổ biến của list bảo mật.
-  DEFAULT_ALLOWLIST_URLS: |
-    https://raw.githubusercontent.com/KenShinNguyen/Serverless-Edge-DNS-Gateway/main/rules/allowlists.txt
-    https://raw.githubusercontent.com/AdguardTeam/HttpsExclusions/master/exclusions/banks.txt
-
+ 
 jobs:
   # Lớp 2 là tuỳ chọn: repo mới fork về chưa có secrets Cloudflare. Kiểm tra
   # trước để workflow bỏ qua êm thay vì fail đỏ ở bước `cloudflare-create`.
