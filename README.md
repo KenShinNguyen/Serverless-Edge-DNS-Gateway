@@ -23,6 +23,7 @@ A secure, high-performance DNS-over-HTTPS (DoH) proxy running on Cloudflare's gl
 *   **Private TLD Shield**: Prevents local/internal domain leaks (e.g., `.local`, `.lan`, router logins) by returning `NXDOMAIN` instantly.
 *   **DNS Redirection (CNAME Injection)**: Redirects domain A to domain B using a CNAME record. This allows forcing a specific CDN chain or overriding resolution (e.g., Bilibili, TikTok, Medium).
 *   **Zero-App Setup**: Native Apple `.mobileconfig` generation and a clean, responsive landing page included.
+*   **Response Caching**: Every answer carries a `Cache-Control` header derived from the record TTLs (RFC 8484 §5.1, capped at 1 hour), so clients and Cloudflare's edge reuse answers instead of burning free-tier requests.
 
 ---
 
@@ -161,5 +162,28 @@ Device ──DoH──▶ Pages Function (Layer 1: ads/tracking ~1M domains, ECS
 
 > [!NOTE]
 > When `DOH_TOKEN` is set, append it to every endpoint: `/dns-query/<token>`, `/debug/<token>`, `/apple/<token>`. The generated Apple profile automatically embeds the tokened URL.
+
+`/dns-query` accepts both `POST` (body `application/dns-message`) and `GET` (`?dns=<base64url>`) per RFC 8484. Queries that are shorter than a DNS header, carry `QR=1`, or contain no question are rejected with `400` before an upstream request is spent on them.
+
+---
+
+## 🧪 Development
+
+The whole DNS layer in [functions/[[path]].js](functions/[[path]].js) is a hand-written wire-format parser and serializer, so it ships with a test suite. There is nothing to install — the repo stays build-free so Cloudflare Pages can deploy it straight from the root, and Node's own test runner (Node 18+) is all that is needed:
+
+```bash
+node --test 'test/*.test.mjs'
+```
+
+| File | Covers |
+| :--- | :--- |
+| `test/wire.test.mjs` | Name/label walking, question parsing, and the synthesized NXDOMAIN / NODATA / SERVFAIL replies. |
+| `test/filtering.test.mjs` | Blocklist/allowlist precedence, private-TLD and Mullvad suffix matching, list-file parsing. |
+| `test/caching.test.mjs` | TTL extraction and the `Cache-Control` header derived from it. |
+| `test/ecs.test.mjs` | ECS injection, prefix masking, OPT replacement, and rejection of malformed client IPs. |
+| `test/redirect.test.mjs` | QNAME rewriting and CNAME response synthesis. |
+| `test/handler.test.mjs` | End-to-end routing: token gating, failover, geo-bypass, `/debug`, `/apple`, CORS. |
+
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs these on every pull request, alongside `shellcheck` on `update_lists.sh` and a format check on the hand-maintained rule files.
 
 ---

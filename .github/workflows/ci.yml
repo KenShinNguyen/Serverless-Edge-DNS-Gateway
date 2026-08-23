@@ -1,0 +1,120 @@
+# Kiểm thử tự động cho edge function và script cập nhật list.
+#
+# Toàn bộ mã DNS trong functions/[[path]].js là parser/serializer wire-format
+# viết tay: một lỗi lệch offset không làm gì đổ vỡ ồn ào, nó chỉ trả về câu trả
+# lời sai cho mọi thiết bị đang dùng gateway. Chạy test trên mỗi PR là cách rẻ
+# nhất để bắt loại lỗi đó trước khi Cloudflare Pages deploy.
+#
+# CỐ Ý không có bước `npm install`: repo giữ nguyên thiết kế zero-build (không
+# có package.json ở thư mục gốc) để Cloudflare Pages deploy thẳng mà không cần
+# cấu hình. Test runner của Node đã có sẵn từ Node 18.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    # Bỏ qua commit "Auto-update: blocklists and allowlists" (3 giờ/lần):
+    # chúng chỉ đụng rules/*.txt, không ảnh hưởng code.
+    paths-ignore:
+      - 'rules/**'
+      - '**.md'
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Edge function tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Syntax check
+        run: node --check 'functions/[[path]].js'
+
+      - name: Run tests
+        run: node --test 'test/*.test.mjs'
+
+  shell:
+    name: Shell script lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # shellcheck có sẵn trên runner ubuntu-latest, không cần cài thêm.
+      - name: ShellCheck
+        run: shellcheck update_lists.sh
+
+      - name: Bash syntax check
+        run: bash -n update_lists.sh
+
+  lists:
+    name: Rule file sanity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Edge function đọc các file này theo từng dòng và không xác thực gì cả.
+      # Một dòng rác lọt vào rules/private_tlds.txt sẽ lặng lẽ trả NXDOMAIN cho
+      # domain thật, nên kiểm tra định dạng ngay tại đây.
+      - name: Validate rule files
+        run: |
+          set -euo pipefail
+          fail=0
+
+          check_domains() {
+            local file="$1" label="$2"
+            [ -f "$file" ] || { echo "::error::$file không tồn tại"; fail=1; return; }
+            # Cho phép domain, nhãn đơn (TLD riêng như "lan") và địa chỉ IP trần
+            local bad
+            bad=$(grep -nvE '^[a-z0-9]([a-z0-9_-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9_-]{0,61}[a-z0-9])?)*$' "$file" \
+                  | grep -vE '^[0-9]+:[[:space:]]*(#|!|$)' || true)
+            if [ -n "$bad" ]; then
+              echo "::error::$label có dòng không hợp lệ:"
+              echo "$bad" | head -20
+              fail=1
+            else
+              echo "✅ $label: $(grep -cvE '^[[:space:]]*(#|!|$)' "$file") mục"
+            fi
+          }
+
+          check_domains rules/private_tlds.txt "private_tlds.txt"
+          check_domains rules/mullvad_upstream.txt "mullvad_upstream.txt"
+
+          # redirect_rules.txt là "<nguồn> <đích>" — một cột lẻ nghĩa là dòng bị
+          # cắt mất vế đích, và edge function sẽ bỏ qua nó trong im lặng.
+          bad_redirect=$(grep -vE '^[[:space:]]*(#|!|$)' rules/redirect_rules.txt \
+                         | awk 'NF != 2 { print NR": "$0 }' || true)
+          if [ -n "$bad_redirect" ]; then
+            echo "::error::redirect_rules.txt phải có đúng 2 cột mỗi dòng:"
+            echo "$bad_redirect"
+            fail=1
+          else
+            echo "✅ redirect_rules.txt: $(grep -cvE '^[[:space:]]*(#|!|$)' rules/redirect_rules.txt) quy tắc"
+          fi
+
+          # Chốt an toàn: allowlist thắng blocklist ở cùng cấp, nên một domain
+          # nằm ở cả hai file là dữ liệu tự mâu thuẫn. update_lists.sh đã trừ
+          # allowlist khỏi blocklist ở bước cuối; kiểm tra lại để bước đó không
+          # âm thầm hỏng.
+          overlap=$(LC_ALL=C comm -12 \
+            <(LC_ALL=C sort -u rules/blocklists.txt) \
+            <(LC_ALL=C sort -u rules/allowlists.txt) | wc -l)
+          if [ "$overlap" -gt 0 ]; then
+            echo "::error::$overlap domain nằm trong CẢ blocklist lẫn allowlist — bước comm -23 của update_lists.sh có thể đã hỏng."
+            fail=1
+          else
+            echo "✅ blocklist và allowlist không giao nhau"
+          fi
+
+          exit $fail

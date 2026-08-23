@@ -1,0 +1,11 @@
+# Repo này cố ý không có bước build: Cloudflare Pages phục vụ thẳng từ thư mục
+# gốc. Không có dependency nào để cài — các mục dưới đây chỉ để rác cục bộ
+# không lọt vào commit.
+node_modules/
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# Đầu ra tạm của update_lists.sh khi chạy tay ngoài GitHub Actions
+*.tmp
+*.sorted
