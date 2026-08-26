@@ -130,6 +130,7 @@ declare -a BLOCK_URLS=(
   "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/popupads-onlydomains.txt"
   "https://raw.githubusercontent.com/mullvad/dns-blocklists/refs/heads/main/output/doh/doh_gambling.txt"
   "https://raw.githubusercontent.com/mullvad/dns-blocklists/main/output/doh/doh_privacy.txt"
+  "https://raw.githubusercontent.com/mullvad/dns-blocklists/refs/heads/main/output/doh/doh_adult.txt"
 )
 
 # Khởi tạo file tmp và stats. ALLOW_TMP khởi tạo ngay tại đây (không phải ở
