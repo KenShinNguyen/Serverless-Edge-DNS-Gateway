@@ -1,24 +1,37 @@
 name: Delete Old Workflow Runs
+
 on:
   workflow_dispatch:
   schedule:
+    # 20:00 UTC = 03:00 giờ VN hôm sau
     - cron: '0 20 * * *'
 
-# Cấp quyền cho GITHUB_TOKEN để xóa workflow runs
-permissions:
-  actions: write
+# Dispatch thủ công không đè lên lần cron đang chạy. cancel-in-progress: false
+# vì job này gọi API xoá — huỷ giữa chừng để lại trạng thái dọn dở dang.
+concurrency:
+  group: delete-old-workflow-runs
+  cancel-in-progress: false
 
 jobs:
   del_runs:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Quyền đặt ở cấp job (least privilege) thay vì top-level.
+    permissions:
+      actions: write
     steps:
       - name: Delete Workflow Runs
         uses: Mattraks/delete-workflow-runs@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           repository: ${{ github.repository }}
-          # Giữ đủ lịch sử để còn truy được nguyên nhân khi một lần chạy hỏng:
-          # retain_days: 1 + keep_minimum_runs: 0 xoá gần như sạch log mỗi đêm,
-          # nên lỗi xảy ra hôm trước là mất dấu vết.
-          retain_days: 10
+          # Giữ đủ lịch sử để còn truy được nguyên nhân khi một lần chạy hỏng.
+          # retain_days thấp + keep_minimum_runs thấp sẽ xoá gần sạch log mỗi
+          # đêm, nên lỗi xảy ra hôm trước là mất dấu vết.
+          retain_days: 3
+          # Sàn này mới là thứ bảo vệ các workflow chạy thưa
+          # (Cleanup_Gateway_Lists, Update_Gateway_Security_Lists — cả hai đều
+          # destructive/manual): sau retain_days chúng chỉ còn đúng số run này.
           keep_minimum_runs: 10
+          # Chỉ dọn run thành công; run hỏng giữ lại để còn điều tra.
+          delete_run_by_conclusion_pattern: "success"
