@@ -919,6 +919,7 @@ dashlane.com
 data.adobedc.net
 data.digital.costco.ca
 data.digital.costco.com
+data.email.premierleague.com
 data.email.tangerine.ca
 data.notify.macys.com
 data.orders.costco.ca
