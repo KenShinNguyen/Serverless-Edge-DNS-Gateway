@@ -212,6 +212,7 @@ api.ipify.org
 api.karte.io
 api.oplata.com
 api.rudderstack.com
+api.taboola.com
 api.tech26.de
 apigw.tosspayments.com
 apobank.de
