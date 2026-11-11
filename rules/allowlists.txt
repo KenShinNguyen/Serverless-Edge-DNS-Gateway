@@ -187,6 +187,7 @@ amundi-tc.com
 anaf.ro
 analitik.edevlet.gov.tr
 analytics.amplitude.com
+analytics.cibc.com
 analytics.pinterest.com
 analytics.twitter.com
 andebu-sparebank.no
