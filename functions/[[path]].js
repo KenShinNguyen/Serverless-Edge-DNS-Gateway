@@ -12,8 +12,8 @@
 // resolver, so it can never be a working default here; set your own slug URL
 // through the UPSTREAM_PRIMARY environment variable instead.
 let UPSTREAM_PRIMARY = 'https://cloudflare-dns.com/dns-query';
-let UPSTREAM_FALLBACK = 'https://dns.google/dns-query';
-let UPSTREAM_GEO_BYPASS = 'https://dns.mullvad.net/dns-query'; // Re-resolve without ECS when geo-block returns loopback
+let UPSTREAM_FALLBACK = 'https://doh3.dns.nextdns.io/e5eafd';
+let UPSTREAM_GEO_BYPASS = 'https://doh3.dns.nextdns.io/7693ac'; // Re-resolve without ECS when geo-block returns loopback
 const UPSTREAM_TIMEOUT = 5000;
 
 // Optional access token (env: DOH_TOKEN). When set, every function route
