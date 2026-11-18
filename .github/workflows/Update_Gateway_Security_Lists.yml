@@ -78,6 +78,8 @@ env:
     https://raw.githubusercontent.com/blocklistproject/Lists/master/phishing.txt
     https://raw.githubusercontent.com/blocklistproject/Lists/master/scam.txt
     https://raw.githubusercontent.com/blocklistproject/Lists/master/ransomware.txt
+    https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/rpz/fake.txt
+    https://urlhaus.abuse.ch/downloads/hostfile
   # Dòng đầu: allowlist dùng chung với Lớp 1 (rules/allowlists.txt của repo này)
   # — đây chính là cơ chế đồng bộ allowlist giữa 2 lớp mà rules/allowlists.txt
   # mô tả. Dòng sau: chống chặn nhầm phổ biến của list bảo mật (~3.999 domain
