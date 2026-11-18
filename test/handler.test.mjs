@@ -101,7 +101,7 @@ test('a Mullvad-listed domain goes to the geo-bypass upstream without ECS', asyn
 
   assert.equal(res.headers.get('x-upstream'), 'Mullvad');
   assert.equal(calls.length, 1);
-  assert.match(calls[0].url, /mullvad/);
+  assert.equal(calls[0].url, 'https://dns.nextdns.io/7693ac');
   assert.deepEqual(
     Array.from(new Uint8Array(calls[0].body)),
     Array.from(new Uint8Array(original)),
@@ -124,7 +124,7 @@ test('a failing primary upstream falls over to the secondary', async () => {
   const res = await call(worker, '/dns-query', { body: query() });
 
   assert.equal(res.status, 200);
-  assert.deepEqual(seen, ['cloudflare-dns.com', 'dns.google']);
+  assert.deepEqual(seen, ['cloudflare-dns.com', 'dns.nextdns.io']);
   assert.equal(res.headers.get('cache-control'), 'max-age=30');
 });
 
@@ -154,7 +154,7 @@ test('a loopback answer is re-resolved through the geo-bypass upstream', async (
 
   const res = await call(worker, '/dns-query', { body: query() });
 
-  assert.deepEqual(hosts, ['cloudflare-dns.com', 'dns.mullvad.net']);
+  assert.deepEqual(hosts, ['cloudflare-dns.com', 'dns.nextdns.io']);
   assert.equal(res.headers.get('cache-control'), 'max-age=45');
 });
 
