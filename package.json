@@ -3,10 +3,12 @@
   "private": true,
   "scripts": {
     "test": "node --test 'test/*.test.mjs'",
-    "check": "node --check 'functions/[[path]].js'"
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck"
   },
   "devDependencies": {
     "wrangler": "^4.50.0",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "@cloudflare/workers-types": "^4.20261123.0"
   }
 }
