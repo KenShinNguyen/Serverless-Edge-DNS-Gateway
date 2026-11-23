@@ -955,7 +955,9 @@ async function handleDNSQuery(request, context) {
 
   // Load data if any domain-based filter is enabled
   if (AD_BLOCK_ENABLED || BLOCK_PRIVATE_TLD || DNS_REDIRECT_ENABLED || MULLVAD_UPSTREAM_ENABLED) {
-    await ensureBlocklistsLoaded(request.url, context);
+    if (!context.env?.RULES_BUCKET) {
+      await ensureBlocklistsLoaded(request.url, context);
+    }
 
     // Parse domains once for both filters
     const domains = extractAllDomains(query);
