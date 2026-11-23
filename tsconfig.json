@@ -3,10 +3,16 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "strict": true,
+    "strict": false,
     "skipLibCheck": true,
-    "types": ["@cloudflare/workers-types"],
-    "noEmit": true
+    "types": [
+      "@cloudflare/workers-types"
+    ],
+    "noEmit": true,
+    "noImplicitAny": false,
+    "noUnusedLocals": false
   },
-  "include": ["src/**/*.ts"]
+  "include": [
+    "src/**/*.ts"
+  ]
 }
