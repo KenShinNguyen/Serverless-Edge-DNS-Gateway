@@ -44,6 +44,8 @@ const BLOCKLIST_URL = '/rules/blocklists.txt';
 const ALLOWLIST_URL = '/rules/allowlists.txt';
 
 let ECS_INJECTION_ENABLED = true;
+let ECS_MODE = 'full';
+let ECS_ALLOWLIST = new Set();
 const ECS_PREFIX_V4 = 24;
 const ECS_PREFIX_V6 = 48;
 
@@ -83,7 +85,9 @@ function applyEnvConfig(env) {
   if (env.BLOCK_PTR !== undefined) BLOCK_PTR = env.BLOCK_PTR === 'true';
   if (env.BLOCK_HTTPS !== undefined) BLOCK_HTTPS = env.BLOCK_HTTPS === 'true';
   if (env.BLOCK_PRIVATE_TLD !== undefined) BLOCK_PRIVATE_TLD = env.BLOCK_PRIVATE_TLD === 'true';
-  if (env.ECS_MODE === 'off') ECS_INJECTION_ENABLED = false;
+  if (env.ECS_MODE) ECS_MODE = env.ECS_MODE;
+  if (env.ECS_ALLOWLIST) ECS_ALLOWLIST = new Set(env.ECS_ALLOWLIST.split(',').map(v => v.trim().toLowerCase()).filter(Boolean));
+  if (ECS_MODE === 'off') ECS_INJECTION_ENABLED = false;
   BLOCKED_QTYPES = getBlockedQtypes();
   envApplied = true;
 }
@@ -123,6 +127,17 @@ async function hostUuid(host, salt) {
 const IPV4_MAPPED_REGEX = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i;
 const IPV6_VALID_REGEX = /^[0-9a-f:]+$/i;
 const IPV6_GROUP_REGEX = /^[0-9a-f]+$/i;
+
+function isEcsAllowedDomain(domain) {
+  if (!domain || ECS_ALLOWLIST.size === 0) return false;
+  let candidate = domain.toLowerCase();
+  while (true) {
+    if (ECS_ALLOWLIST.has(candidate)) return true;
+    const dot = candidate.indexOf('.');
+    if (dot === -1) return false;
+    candidate = candidate.slice(dot + 1);
+  }
+}
 
 // ==================== STATE ====================
 let adBlocklist = new Set();
@@ -486,8 +501,8 @@ const buildServfail = (query) => buildEmptyResponse(query, 2);
 // ==================== ECS INJECTION ====================
 // Inject EDNS Client Subnet (ECS) into DNS query per RFC 7871
 // Adds client subnet info for geo-optimized CDN responses
-function injectECS(query, clientIP) {
-  if (!ECS_INJECTION_ENABLED || !clientIP || clientIP === 'unknown') return query;
+function injectECS(query, clientIP, domain = '') {
+  if (!ECS_INJECTION_ENABLED || (ECS_MODE === 'selective' && !isEcsAllowedDomain(domain)) || !clientIP || clientIP === 'unknown') return query;
   try {
     const v = new Uint8Array(query);
     if (v.length < 12) return query;
@@ -807,8 +822,8 @@ async function forwardQuery(query, upstream) {
 
 // Resolve DNS query with fallback and geo-bypass logic
 // Returns SERVFAIL on upstream errors, NXDOMAIN for geo-blocked domains
-async function resolveQuery(query, clientIP) {
-  const processed = injectECS(query, clientIP);
+async function resolveQuery(query, clientIP, domain = '') {
+  const processed = injectECS(query, clientIP, domain);
   let result;
   try {
     result = await forwardQuery(processed, UPSTREAM_PRIMARY);
@@ -940,7 +955,7 @@ async function handleDNSQuery(request, context) {
         const targetDomain = redirectRules.get(domain);
         try {
           const rewritten = rewriteQname(query, targetDomain);
-          const upstreamData = await resolveQuery(rewritten, clientIP);
+          const upstreamData = await resolveQuery(rewritten, clientIP, targetDomain);
           const redirected = buildRedirectResponse(query, upstreamData, targetDomain);
           return new Response(redirected, {
             headers: dnsHeaders(cors, redirected, { 'X-Redirected': `${domain} -> ${targetDomain}` })
@@ -954,7 +969,7 @@ async function handleDNSQuery(request, context) {
 
   // Forward to upstream
   try {
-    const data = await resolveQuery(query, clientIP);
+    const data = await resolveQuery(query, clientIP, domain);
     return new Response(data, { headers: dnsHeaders(cors, data) });
   } catch {
     return new Response('Upstream error', { status: 502, headers: cors });
