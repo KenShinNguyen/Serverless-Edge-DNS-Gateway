@@ -13,6 +13,12 @@
 // through the UPSTREAM_PRIMARY environment variable instead.
 let UPSTREAM_PRIMARY = 'https://cloudflare-dns.com/dns-query';
 let UPSTREAM_FALLBACK = 'https://dns.quad9.net/dns-query';
+// ECS-capable path is intentionally separate from the privacy-first path.
+// 1.1.1.1 explicitly does not send ECS, while Quad9 exposes a dedicated
+// ECS-enabled endpoint at dns11.quad9.net. Selective ECS must therefore
+// choose its upstream after the domain policy is evaluated.
+let UPSTREAM_ECS = 'https://dns.google/dns-query';
+let UPSTREAM_ECS_FALLBACK = 'https://dns11.quad9.net/dns-query';
 let UPSTREAM_GEO_BYPASS = 'https://dns.mullvad.net/dns-query'; // Optional no-ECS resolver for explicitly allowed geo-bypass domains
 let GEO_BYPASS_MODE = 'allowlist'; // 'allowlist' | 'disabled' | 'legacy-loopback'
 let GEO_BYPASS_ALLOWLIST = new Set();
@@ -46,8 +52,14 @@ const BLOCKLIST_URL = '/rules/blocklists.txt';
 const ALLOWLIST_URL = '/rules/allowlists.txt';
 
 let ECS_INJECTION_ENABLED = true;
-let ECS_MODE = 'full';
-let ECS_ALLOWLIST = new Set();
+let ECS_MODE = 'selective';
+const DEFAULT_ECS_ALLOWLIST = [
+  'akamai.net', 'akamaiedge.net', 'akamaihd.net', 'cloudfront.net',
+  'fastly.net', 'cdn77.org', 'b-cdn.net', 'gcore.lu', 'googlevideo.com',
+  'fbcdn.net', 'tiktokcdn.com', 'bilivideo.com', 'edgesuite.net',
+  'edgekey.net', 'llnwd.net', 'hwcdn.net', 'stackpathcdn.com', 'cdninstagram.com'
+];
+let ECS_ALLOWLIST = new Set(DEFAULT_ECS_ALLOWLIST);
 const ECS_PREFIX_V4 = 24;
 const ECS_PREFIX_V6 = 48;
 
@@ -78,6 +90,8 @@ function applyEnvConfig(env) {
   if (envApplied || !env) return;
   if (env.UPSTREAM_PRIMARY) UPSTREAM_PRIMARY = env.UPSTREAM_PRIMARY;
   if (env.UPSTREAM_FALLBACK) UPSTREAM_FALLBACK = env.UPSTREAM_FALLBACK;
+  if (env.UPSTREAM_ECS) UPSTREAM_ECS = env.UPSTREAM_ECS;
+  if (env.UPSTREAM_ECS_FALLBACK) UPSTREAM_ECS_FALLBACK = env.UPSTREAM_ECS_FALLBACK;
   if (env.UPSTREAM_GEO_BYPASS) UPSTREAM_GEO_BYPASS = env.UPSTREAM_GEO_BYPASS;
   if (env.GEO_BYPASS_MODE) GEO_BYPASS_MODE = env.GEO_BYPASS_MODE;
   if (env.GEO_BYPASS_ALLOWLIST) GEO_BYPASS_ALLOWLIST = new Set(env.GEO_BYPASS_ALLOWLIST.split(',').map(v => v.trim().toLowerCase()).filter(Boolean));
@@ -424,7 +438,7 @@ function minResponseTtl(buf) {
 function dnsHeaders(cors, body, extra) {
   const ttl = body === null || typeof body === 'number' ? body : minResponseTtl(body);
   const headers = { ...cors, ...extra, 'Content-Type': 'application/dns-message' };
-  headers['Cache-Control'] = ttl === null ? 'no-store' : `max-age=${Math.min(ttl, MAX_RESPONSE_TTL)}`;
+  headers['Cache-Control'] = ttl === null ? 'no-store' : `public, max-age=${Math.min(ttl, MAX_RESPONSE_TTL)}`;
   return headers;
 }
 
@@ -841,12 +855,16 @@ async function forwardQuery(query, upstream) {
 // Returns SERVFAIL on upstream errors, NXDOMAIN for geo-blocked domains
 async function resolveQuery(query, clientIP, domain = '') {
   const processed = injectECS(query, clientIP, domain);
+  const ecsEligible = ECS_INJECTION_ENABLED && clientIP && clientIP !== 'unknown' &&
+    (ECS_MODE !== 'selective' || isEcsAllowedDomain(domain));
+  const primary = ecsEligible ? UPSTREAM_ECS : UPSTREAM_PRIMARY;
+  const fallback = ecsEligible ? UPSTREAM_ECS_FALLBACK : UPSTREAM_FALLBACK;
   let result;
   try {
-    result = await forwardQuery(processed, UPSTREAM_PRIMARY);
+    result = await forwardQuery(processed, primary);
   } catch {
     try {
-      result = await forwardQuery(processed, UPSTREAM_FALLBACK);
+      result = await forwardQuery(processed, fallback);
     } catch {
       // Both primary and fallback upstream failed
       return buildServfail(query);
@@ -973,7 +991,7 @@ async function handleDNSQuery(request, context) {
       // DNS redirect: HTTPS (TYPE 65) must not leak the original target's
       // ipv4hint/ipv6hint. Return NODATA so the client falls back to A/AAAA
       // resolution for the rewritten target instead of bypassing the redirect.
-      if (DNS_REDIRECT_ENABLED && redirectRules.has(domain) && extractQtype(query) === 65) {
+      if (DNS_REDIRECT_ENABLED && redirectRules.has(domain) && (extractQtype(query) === 64 || extractQtype(query) === 65)) {
         return new Response(buildNodata(query), {
           headers: dnsHeaders(cors, LOCAL_RESPONSE_TTL, { 'X-Redirected-HTTPS': domain })
         });
@@ -1030,9 +1048,21 @@ async function handleRequest(request, context) {
       await ensureBlocklistsLoaded(request.url, context);
     }
     return new Response(JSON.stringify({
-      upstreams: { primary: maskUpstream(UPSTREAM_PRIMARY), fallback: maskUpstream(UPSTREAM_FALLBACK), geoBypass: maskUpstream(UPSTREAM_GEO_BYPASS) },
+      upstreams: {
+        primary: maskUpstream(UPSTREAM_PRIMARY),
+        fallback: maskUpstream(UPSTREAM_FALLBACK),
+        ecs: maskUpstream(UPSTREAM_ECS),
+        ecsFallback: maskUpstream(UPSTREAM_ECS_FALLBACK),
+        geoBypass: maskUpstream(UPSTREAM_GEO_BYPASS)
+      },
       adBlock: { enabled: AD_BLOCK_ENABLED, blocklist: adBlocklist.size, allowlist: adAllowlist.size, lastFetch: blocklistLastFetch ? new Date(blocklistLastFetch).toISOString() : 'never' },
-      ecs: { enabled: ECS_INJECTION_ENABLED, prefixV4: `/${ECS_PREFIX_V4}`, prefixV6: `/${ECS_PREFIX_V6}` },
+      ecs: {
+        enabled: ECS_INJECTION_ENABLED,
+        mode: ECS_MODE,
+        allowlist: ECS_ALLOWLIST.size,
+        prefixV4: `/${ECS_PREFIX_V4}`,
+        prefixV6: `/${ECS_PREFIX_V6}`
+      },
       blockedTypes: { ANY: BLOCK_ANY, AAAA: BLOCK_AAAA, PTR: BLOCK_PTR, HTTPS: BLOCK_HTTPS },
       privateTld: { enabled: BLOCK_PRIVATE_TLD, entries: privateTlds.size },
       dnsRedirect: { enabled: DNS_REDIRECT_ENABLED, rules: redirectRules.size },
