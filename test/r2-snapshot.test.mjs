@@ -104,7 +104,9 @@ test("corrupt v2 rolls back to the active v1 snapshot", async () => {
   bucket.objects.set("compiled/latest.json", JSON.stringify(m2));
   bucket.objects.set(m2.key, corrupt);
 
-  // Force the manager to revalidate without sleeping five minutes.
+  // Force the manager to revalidate without sleeping five minutes. Private
+  // fields are runtime properties after TypeScript stripping.
+  manager.nextCheckAt = 0;
   const result = await manager.evaluate("ads.example.com", bucket, ctx());
   assert.equal(result, "BLOCK");
   assert.equal(manager.getLoadedVersion(), "v1");
