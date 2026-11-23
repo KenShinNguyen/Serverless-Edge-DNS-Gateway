@@ -5,14 +5,32 @@ on:
     - cron: "15 */6 * * *"
   workflow_dispatch:
     inputs:
-      dry_run:
-        description: "Compile and Canary only; do not write to R2"
+      action:
+        description: "R2 operation"
         required: false
-        default: "false"
+        default: "publish"
         type: choice
         options:
-          - "false"
-          - "true"
+          - "publish"
+          - "dry-run"
+          - "rollback"
+          - "unrevoke"
+          - "verify"
+      target_sha:
+        description: "Rollback target SHA or previous; unrevoke requires a 64-character SHA"
+        required: false
+        default: "previous"
+        type: string
+      reason:
+        description: "Required audit reason for rollback"
+        required: false
+        default: ""
+        type: string
+      retention_limit:
+        description: "Retention limit 1..50; blank uses 5"
+        required: false
+        default: ""
+        type: string
 
 concurrency:
   group: r2-compiled-rules-publisher
@@ -23,12 +41,63 @@ permissions:
   contents: read
 
 jobs:
-  compile-and-publish:
-    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+  r2-dispatch:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
     steps:
+      - name: Resolve execution mode safely
+        id: mode
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_ACTION: ${{ inputs.action }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "schedule" ]; then
+            EFFECTIVE="publish"
+          elif [ -n "$INPUT_ACTION" ]; then
+            EFFECTIVE="$INPUT_ACTION"
+          else
+            EFFECTIVE="publish"
+          fi
+
+          case "$EFFECTIVE" in
+            publish|dry-run|rollback|unrevoke|verify)
+              echo "action=$EFFECTIVE" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Unsupported action: $EFFECTIVE" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Validate action inputs
+        env:
+          ACTION: ${{ steps.mode.outputs.action }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          ROLLBACK_REASON: ${{ inputs.reason }}
+        run: |
+          set -euo pipefail
+          case "$ACTION" in
+            rollback)
+              if [ "$TARGET_SHA" != "previous" ] && ! printf '%s' "$TARGET_SHA" | grep -Eq '^[0-9a-f]{64}$'; then
+                echo "rollback target_sha must be 'previous' or a 64-character lowercase SHA-256" >&2
+                exit 1
+              fi
+              if [ -z "${ROLLBACK_REASON//[[:space:]]/}" ]; then
+                echo "rollback reason is required" >&2
+                exit 1
+              fi
+              ;;
+            unrevoke)
+              if ! printf '%s' "$TARGET_SHA" | grep -Eq '^[0-9a-f]{64}$'; then
+                echo "unrevoke target_sha must be a 64-character lowercase SHA-256" >&2
+                exit 1
+              fi
+              ;;
+          esac
+
       - name: Checkout source code
         uses: actions/checkout@v6
 
@@ -38,30 +107,72 @@ jobs:
           node-version: "24"
 
       - name: Install dependencies
-        run: npm install --ignore-scripts
+        run: npm ci --ignore-scripts
 
       - name: Run unit and snapshot tests
+        if: ${{ steps.mode.outputs.action == 'publish' || steps.mode.outputs.action == 'dry-run' }}
         run: npm test
 
       - name: TypeScript check
+        if: ${{ steps.mode.outputs.action == 'publish' || steps.mode.outputs.action == 'dry-run' }}
         run: npm run typecheck
 
       - name: Compile binary rules and run canaries
+        if: ${{ steps.mode.outputs.action == 'publish' || steps.mode.outputs.action == 'dry-run' }}
         run: npm run compile-rules
 
       - name: Dry-run R2 publisher
-        if: ${{ inputs.dry_run == 'true' }}
+        if: ${{ steps.mode.outputs.action == 'dry-run' }}
         env:
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_BUCKET_NAME: dns-compiled-rules
+          RETENTION_LIMIT: ${{ inputs.retention_limit }}
         run: node scripts/publish-r2.mjs --dry-run
 
       - name: Publish immutable snapshot to R2
-        if: ${{ inputs.dry_run != 'true' }}
+        if: ${{ steps.mode.outputs.action == 'publish' }}
         env:
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_BUCKET_NAME: dns-compiled-rules
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RETENTION_LIMIT: ${{ inputs.retention_limit }}
           RULE_VERSION: ${{ github.sha }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: node scripts/publish-r2.mjs
+
+      - name: Roll back immutable snapshot in R2
+        if: ${{ steps.mode.outputs.action == 'rollback' }}
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET_NAME: dns-compiled-rules
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RETENTION_LIMIT: ${{ inputs.retention_limit }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          ROLLBACK_REASON: ${{ inputs.reason }}
+        run: node scripts/publish-r2.mjs --rollback "$TARGET_SHA" --reason "$ROLLBACK_REASON"
+
+      - name: Unrevoke SHA in R2
+        if: ${{ steps.mode.outputs.action == 'unrevoke' }}
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET_NAME: dns-compiled-rules
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RETENTION_LIMIT: ${{ inputs.retention_limit }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: node scripts/publish-r2.mjs --unrevoke "$TARGET_SHA"
+
+      - name: Verify R2 state
+        if: ${{ steps.mode.outputs.action != 'dry-run' }}
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET_NAME: dns-compiled-rules
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RETENTION_LIMIT: ${{ inputs.retention_limit }}
+        run: node scripts/verify-r2-state.mjs
