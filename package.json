@@ -2,9 +2,10 @@
   "name": "serverless-edge-dns-gateway",
   "private": true,
   "scripts": {
-    "test": "node --test 'test/*.test.mjs'",
+    "test": "node --experimental-strip-types --test 'test/*.test.mjs'",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck"
+    "check": "npm run typecheck",
+    "compile-rules": "node scripts/compile-rules.mjs"
   },
   "devDependencies": {
     "wrangler": "^4.50.0",
