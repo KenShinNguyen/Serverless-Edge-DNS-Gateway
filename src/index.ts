@@ -1,3 +1,7 @@
+import { RuleSnapshotManager } from './rules-engine.ts';
+
+const ruleSnapshotManager = new RuleSnapshotManager();
+
 // ==================== CONFIG ====================
 // Upstreams are meant to be configured per-deployment via environment
 // variables (Cloudflare Pages > Settings > Environment variables):
@@ -981,8 +985,13 @@ async function handleDNSQuery(request, context) {
         });
       }
 
-      // Ad block check (NXDOMAIN)
-      if (AD_BLOCK_ENABLED && isDomainBlocked(domain)) {
+      // Ad block check. Prefer the immutable R2 binary snapshot when configured;
+      // retain the existing text-list path as a deliberate local/staging fallback.
+      const binaryDecision = AD_BLOCK_ENABLED && context.env?.RULES_BUCKET
+        ? await ruleSnapshotManager.evaluate(domain, context.env.RULES_BUCKET, context)
+        : (AD_BLOCK_ENABLED && isDomainBlocked(domain) ? 'BLOCK' : 'PASS');
+
+      if (binaryDecision === 'BLOCK') {
         return new Response(buildNxdomain(query), {
           headers: dnsHeaders(cors, LOCAL_RESPONSE_TTL, { 'X-Blocked': domain })
         });
