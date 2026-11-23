@@ -5,9 +5,9 @@
 # lời sai cho mọi thiết bị đang dùng gateway. Chạy test trên mỗi PR là cách rẻ
 # nhất để bắt loại lỗi đó trước khi Cloudflare Pages deploy.
 #
-# CỐ Ý không có bước `npm install`: repo giữ nguyên thiết kế zero-build (không
-# có package.json ở thư mục gốc) để Cloudflare Pages deploy thẳng mà không cần
-# cấu hình. Test runner của Node đã có sẵn từ Node 18.
+# Repo hiện có package.json để typecheck, unit test và biên dịch binary rules.
+# Không có package-lock.json nên CI dùng `npm install` thay vì `npm ci`.
+# Node 24 cung cấp test runner và runtime tương thích với Worker toolchain.
 name: CI
 
 on:
@@ -33,23 +33,29 @@ jobs:
     name: Edge function tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: '22'
+          node-version: '24'
 
-      - name: Syntax check
-        run: node --check 'functions/[[path]].js'
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+
+      - name: TypeScript check
+        run: npm run typecheck
 
       - name: Run tests
-        run: node --test 'test/*.test.mjs'
+        run: npm test
+
+      - name: Compile binary rules
+        run: npm run compile-rules
 
   shell:
     name: Shell script lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # shellcheck có sẵn trên runner ubuntu-latest, không cần cài thêm.
       - name: ShellCheck
@@ -62,7 +68,7 @@ jobs:
     name: Rule file sanity
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # Edge function đọc các file này theo từng dòng và không xác thực gì cả.
       # Một dòng rác lọt vào rules/private_tlds.txt sẽ lặng lẽ trả NXDOMAIN cho
