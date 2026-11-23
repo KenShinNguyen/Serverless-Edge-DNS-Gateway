@@ -19,6 +19,27 @@ This branch migrates the runtime from Cloudflare Pages Functions to a Cloudflare
 - `BLOCK_AAAA` and `BLOCK_HTTPS` remain false so IPv6/HTTPS DNS records are not disabled by default.
 - `ECS_MODE=selective` only injects ECS for domains listed in `ECS_ALLOWLIST`; `ECS_MODE=off` disables ECS.
 
+## ECS upstream routing
+
+Selective ECS now uses a dedicated upstream path:
+
+- Non-ECS queries: `UPSTREAM_PRIMARY` → `UPSTREAM_FALLBACK`.
+- ECS-eligible queries: `UPSTREAM_ECS` → `UPSTREAM_ECS_FALLBACK`.
+- Defaults are Google Public DNS and Quad9's ECS-enabled `dns11` endpoint for the ECS path.
+- The default allowlist contains major CDN suffixes; deployments can replace it with `ECS_ALLOWLIST`.
+
+This separation is intentional. Cloudflare 1.1.1.1 does not send ECS, while Quad9 documents `dns11.quad9.net` as its ECS-enabled service. citeturn908425search4turn908425search0
+
+## Binary rules Phase 2
+
+The branch now contains:
+
+- `src/rules-engine.ts`: zero-copy binary lookup with longest-suffix precedence.
+- `scripts/compile-rules.mjs`: deterministic compiler, ALLOW-over-BLOCK conflict resolution, SHA-256 immutable filenames, and critical-domain canaries.
+- CI executes the compiler as a quality gate but does not publish the artifact to R2 yet.
+
+R2 publication and Worker-side snapshot reload remain deliberately separate from the compiler until the binary format passes the full regression matrix.
+
 ## Deliberately not included yet
 
 The blocklist storage migration from Git-tracked text files to R2/KV is a separate step. The current rule update workflow remains the source of truth until the R2/KV compiler and rollback mechanism are tested. This avoids replacing a working data pipeline with an untested cron job.
