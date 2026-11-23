@@ -13,7 +13,9 @@
 // through the UPSTREAM_PRIMARY environment variable instead.
 let UPSTREAM_PRIMARY = 'https://cloudflare-dns.com/dns-query';
 let UPSTREAM_FALLBACK = 'https://dns.quad9.net/dns-query';
-let UPSTREAM_GEO_BYPASS = 'https://dns.google/dns-query'; // Re-resolve without ECS when geo-block returns loopback
+let UPSTREAM_GEO_BYPASS = 'https://dns.mullvad.net/dns-query'; // Optional no-ECS resolver for explicitly allowed geo-bypass domains
+let GEO_BYPASS_MODE = 'allowlist'; // 'allowlist' | 'disabled' | 'legacy-loopback'
+let GEO_BYPASS_ALLOWLIST = new Set();
 const UPSTREAM_TIMEOUT = 5000;
 
 // Optional access token (env: DOH_TOKEN). When set, every function route
@@ -77,6 +79,8 @@ function applyEnvConfig(env) {
   if (env.UPSTREAM_PRIMARY) UPSTREAM_PRIMARY = env.UPSTREAM_PRIMARY;
   if (env.UPSTREAM_FALLBACK) UPSTREAM_FALLBACK = env.UPSTREAM_FALLBACK;
   if (env.UPSTREAM_GEO_BYPASS) UPSTREAM_GEO_BYPASS = env.UPSTREAM_GEO_BYPASS;
+  if (env.GEO_BYPASS_MODE) GEO_BYPASS_MODE = env.GEO_BYPASS_MODE;
+  if (env.GEO_BYPASS_ALLOWLIST) GEO_BYPASS_ALLOWLIST = new Set(env.GEO_BYPASS_ALLOWLIST.split(',').map(v => v.trim().toLowerCase()).filter(Boolean));
   if (env.DOH_TOKEN) DOH_TOKEN = env.DOH_TOKEN;
   if (env.CORS_ORIGIN) CORS_ORIGIN = env.CORS_ORIGIN;
   if (env.DEBUG_ENABLED === 'true') DEBUG_ENABLED = true;
@@ -133,6 +137,19 @@ function isEcsAllowedDomain(domain) {
   let candidate = domain.toLowerCase();
   while (true) {
     if (ECS_ALLOWLIST.has(candidate)) return true;
+    const dot = candidate.indexOf('.');
+    if (dot === -1) return false;
+    candidate = candidate.slice(dot + 1);
+  }
+}
+
+function isGeoBypassAllowed(domain) {
+  if (GEO_BYPASS_MODE === 'disabled') return false;
+  if (GEO_BYPASS_MODE === 'legacy-loopback') return true;
+  if (!domain || GEO_BYPASS_ALLOWLIST.size === 0) return false;
+  let candidate = domain.toLowerCase();
+  while (true) {
+    if (GEO_BYPASS_ALLOWLIST.has(candidate)) return true;
     const dot = candidate.indexOf('.');
     if (dot === -1) return false;
     candidate = candidate.slice(dot + 1);
@@ -839,7 +856,7 @@ async function resolveQuery(query, clientIP, domain = '') {
   // If response contains 127.0.0.1, re-resolve via geo-bypass upstream.
   // Send the ORIGINAL query (no ECS): the injected subnet is what triggers
   // the geo-lock, and it would needlessly expose the client subnet to Mullvad.
-  if (result && hasLoopbackInAnswer(result)) {
+  if (result && hasLoopbackInAnswer(result) && isGeoBypassAllowed(domain)) {
     try {
       const respMullvad = await forwardQuery(query, UPSTREAM_GEO_BYPASS);
       if (!hasLoopbackInAnswer(respMullvad)) return respMullvad;
@@ -950,6 +967,15 @@ async function handleDNSQuery(request, context) {
       if (AD_BLOCK_ENABLED && isDomainBlocked(domain)) {
         return new Response(buildNxdomain(query), {
           headers: dnsHeaders(cors, LOCAL_RESPONSE_TTL, { 'X-Blocked': domain })
+        });
+      }
+
+      // DNS redirect: HTTPS (TYPE 65) must not leak the original target's
+      // ipv4hint/ipv6hint. Return NODATA so the client falls back to A/AAAA
+      // resolution for the rewritten target instead of bypassing the redirect.
+      if (DNS_REDIRECT_ENABLED && redirectRules.has(domain) && extractQtype(query) === 65) {
+        return new Response(buildNodata(query), {
+          headers: dnsHeaders(cors, LOCAL_RESPONSE_TTL, { 'X-Redirected-HTTPS': domain })
         });
       }
 
