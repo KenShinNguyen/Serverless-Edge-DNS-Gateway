@@ -229,10 +229,11 @@ export class RuleSnapshotManager {
     sha256: string
   ): Promise<ArrayBuffer> {
     const cacheKey = new Request(`https://r2-rules.internal/compiled/rules-${sha256}.bin`);
-    const edgeCache =
-      typeof caches !== "undefined" &&
-      "default" in caches &&
-      caches.default;
+    const cacheStorage =
+      typeof caches !== "undefined"
+        ? (caches as CacheStorage & { default?: Cache })
+        : undefined;
+    const edgeCache = cacheStorage?.default;
 
     if (edgeCache) {
       const cached = await edgeCache.match(cacheKey);
