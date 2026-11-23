@@ -167,7 +167,6 @@ async function pruneUnpinned(s3, bucket, pinnedSet) {
 async function main() {
   const dryRun = process.argv.includes("--dry-run");
   const bucket = process.env.R2_BUCKET_NAME || DEFAULT_BUCKET;
-  const endpoint = requiredEnv("R2_ENDPOINT");
   const outDir = resolve(process.env.RULES_OUT_DIR || "dist/rules");
 
   const localLatest = JSON.parse(await readFile(resolve(outDir, "latest.json"), "utf8"));
@@ -198,7 +197,7 @@ async function main() {
     console.log(JSON.stringify({
       dryRun: true,
       bucket,
-      endpoint,
+      endpoint: process.env.R2_ENDPOINT || null,
       binaryKey,
       statsKey,
       binaryBytes: binary.byteLength,
@@ -208,6 +207,7 @@ async function main() {
     return;
   }
 
+  const endpoint = requiredEnv("R2_ENDPOINT");
   const accessKeyId = requiredEnv("R2_ACCESS_KEY_ID");
   const secretAccessKey = requiredEnv("R2_SECRET_ACCESS_KEY");
 
