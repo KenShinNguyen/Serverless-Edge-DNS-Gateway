@@ -912,6 +912,8 @@ async function handleDNSQuery(request, context) {
     }
   }
 
+  let queryDomain = '';
+
   // Load data if any domain-based filter is enabled
   if (AD_BLOCK_ENABLED || BLOCK_PRIVATE_TLD || DNS_REDIRECT_ENABLED || MULLVAD_UPSTREAM_ENABLED) {
     await ensureBlocklistsLoaded(request.url, context);
@@ -920,6 +922,7 @@ async function handleDNSQuery(request, context) {
     const domains = extractAllDomains(query);
     for (const domain of domains) {
       if (!domain) continue;
+      if (!queryDomain) queryDomain = domain;
 
       // Mullvad Dedicated Upstream — send the original query without ECS:
       // Mullvad strips ECS anyway, so injecting it only leaks the client subnet
@@ -969,7 +972,7 @@ async function handleDNSQuery(request, context) {
 
   // Forward to upstream
   try {
-    const data = await resolveQuery(query, clientIP, domain);
+    const data = await resolveQuery(query, clientIP, queryDomain);
     return new Response(data, { headers: dnsHeaders(cors, data) });
   } catch {
     return new Response('Upstream error', { status: 502, headers: cors });
