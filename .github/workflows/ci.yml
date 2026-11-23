@@ -39,7 +39,7 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Syntax check
+      - name: Install dependencies
         run: npm install --ignore-scripts
 
       - name: TypeScript check
@@ -47,6 +47,9 @@ jobs:
 
       - name: Run tests
         run: npm test
+
+      - name: Compile binary rules
+        run: npm run compile-rules
 
   shell:
     name: Shell script lint
