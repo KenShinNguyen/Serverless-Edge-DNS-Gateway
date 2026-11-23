@@ -1,0 +1,67 @@
+name: Compile and Publish Rules to R2
+
+on:
+  schedule:
+    - cron: "15 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Compile and Canary only; do not write to R2"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+concurrency:
+  group: r2-compiled-rules-publisher
+  cancel-in-progress: false
+  queue: max
+
+permissions:
+  contents: read
+
+jobs:
+  compile-and-publish:
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+
+      - name: Run unit and snapshot tests
+        run: npm test
+
+      - name: TypeScript check
+        run: npm run typecheck
+
+      - name: Compile binary rules and run canaries
+        run: npm run compile-rules
+
+      - name: Dry-run R2 publisher
+        if: ${{ inputs.dry_run == 'true' }}
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET_NAME: dns-compiled-rules
+        run: node scripts/publish-r2.mjs --dry-run
+
+      - name: Publish immutable snapshot to R2
+        if: ${{ inputs.dry_run != 'true' }}
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET_NAME: dns-compiled-rules
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RULE_VERSION: ${{ github.sha }}
+        run: node scripts/publish-r2.mjs
