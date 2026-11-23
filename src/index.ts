@@ -43,18 +43,18 @@ const AD_BLOCK_ENABLED = true;
 const BLOCKLIST_URL = '/rules/blocklists.txt';
 const ALLOWLIST_URL = '/rules/allowlists.txt';
 
-const ECS_INJECTION_ENABLED = true;
+let ECS_INJECTION_ENABLED = true;
 const ECS_PREFIX_V4 = 24;
 const ECS_PREFIX_V6 = 48;
 
 // Block query types early to save Cloudflare Pages requests
-const BLOCK_ANY = false;    // TYPE 255 — ANY queries
-const BLOCK_AAAA = false;   // TYPE 28  — IPv6 queries
-const BLOCK_PTR = false;    // TYPE 12  — Reverse DNS
-const BLOCK_HTTPS = false;  // TYPE 65  — HTTPS record queries
+let BLOCK_ANY = false;    // TYPE 255 — ANY queries
+let BLOCK_AAAA = false;   // TYPE 28  — IPv6 queries
+let BLOCK_PTR = false;    // TYPE 12  — Reverse DNS
+let BLOCK_HTTPS = false;  // TYPE 65  — HTTPS record queries
 
 // Block private/internal TLDs and router domains
-const BLOCK_PRIVATE_TLD = true;
+let BLOCK_PRIVATE_TLD = true;
 const PRIVATE_TLD_URL = '/rules/private_tlds.txt';
 
 // DNS redirect/rewrite (local CNAME overrides)
@@ -78,6 +78,13 @@ function applyEnvConfig(env) {
   if (env.DOH_TOKEN) DOH_TOKEN = env.DOH_TOKEN;
   if (env.CORS_ORIGIN) CORS_ORIGIN = env.CORS_ORIGIN;
   if (env.DEBUG_ENABLED === 'true') DEBUG_ENABLED = true;
+  if (env.BLOCK_ANY !== undefined) BLOCK_ANY = env.BLOCK_ANY === 'true';
+  if (env.BLOCK_AAAA !== undefined) BLOCK_AAAA = env.BLOCK_AAAA === 'true';
+  if (env.BLOCK_PTR !== undefined) BLOCK_PTR = env.BLOCK_PTR === 'true';
+  if (env.BLOCK_HTTPS !== undefined) BLOCK_HTTPS = env.BLOCK_HTTPS === 'true';
+  if (env.BLOCK_PRIVATE_TLD !== undefined) BLOCK_PRIVATE_TLD = env.BLOCK_PRIVATE_TLD === 'true';
+  if (env.ECS_MODE === 'off') ECS_INJECTION_ENABLED = false;
+  BLOCKED_QTYPES = getBlockedQtypes();
   envApplied = true;
 }
 
@@ -284,7 +291,7 @@ function getBlockedQtypes() {
   if (BLOCK_HTTPS) blocked.add(65);
   return blocked;
 }
-const BLOCKED_QTYPES = getBlockedQtypes();
+let BLOCKED_QTYPES = getBlockedQtypes();
 
 // Parse all question domains
 function extractAllDomains(buf) {
