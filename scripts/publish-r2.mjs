@@ -85,8 +85,12 @@ async function readCurrentManifest(s3, bucket) {
 async function headRequiredObjects(s3, bucket, entries) {
   for (const entry of entries) {
     const binary = await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: entry.key }));
+    const stats = await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: entry.stats }));
     if (!Number.isInteger(binary.ContentLength) || binary.ContentLength <= 0) {
       throw new Error(`Pinned binary missing/empty: ${entry.key}`);
+    }
+    if (!Number.isInteger(stats.ContentLength) || stats.ContentLength <= 0) {
+      throw new Error(`Pinned stats missing/empty: ${entry.stats}`);
     }
   }
 }
