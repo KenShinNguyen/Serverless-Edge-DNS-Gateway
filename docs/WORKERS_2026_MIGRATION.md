@@ -28,7 +28,7 @@ Selective ECS now uses a dedicated upstream path:
 - Defaults are Google Public DNS and Quad9's ECS-enabled `dns11` endpoint for the ECS path.
 - The default allowlist contains major CDN suffixes; deployments can replace it with `ECS_ALLOWLIST`.
 
-This separation is intentional. Cloudflare 1.1.1.1 does not send ECS, while Quad9 documents `dns11.quad9.net` as its ECS-enabled service. citeturn908425search4turn908425search0
+This separation is intentional. Cloudflare 1.1.1.1 does not send ECS, while Quad9 documents `dns11.quad9.net` as its ECS-enabled service.
 
 ## Binary rules Phase 2
 
