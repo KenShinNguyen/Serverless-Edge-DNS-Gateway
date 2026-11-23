@@ -11,6 +11,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { validateEdnsV1Buffer } from "../src/rules-binary-format.ts";
+import { assertManifestInvariants, projectManifestFromHistory, rollbackSnapshot, unrevokeSha } from "./r2-state.mjs";
 
 const DEFAULT_BUCKET = "dns-compiled-rules";
 const LATEST_KEY = "compiled/latest.json";
@@ -283,6 +284,32 @@ async function main() {
   const dryRun = process.argv.includes("--dry-run");
   const bucket = process.env.R2_BUCKET_NAME || DEFAULT_BUCKET;
   const retentionLimit = resolveRetentionLimit();
+
+  // FIX 2: source-independent dispatch. Rollback/unrevoke branch before any local artifact read.
+  if (process.argv[2] === "--rollback") {
+    const targetSha = process.argv[3] && !process.argv[3].startsWith("--") ? process.argv[3] : "previous";
+    const reasonIndex = process.argv.indexOf("--reason");
+    const reason = reasonIndex >= 0 ? process.argv[reasonIndex + 1] : undefined;
+    if (reason === undefined || !String(reason).trim()) throw new Error("--reason must be a non-empty string");
+    const endpoint = requiredEnv("R2_ENDPOINT");
+    const accessKeyId = requiredEnv("R2_ACCESS_KEY_ID");
+    const secretAccessKey = requiredEnv("R2_SECRET_ACCESS_KEY");
+    const s3 = new S3Client({ region: "auto", endpoint, credentials: { accessKeyId, secretAccessKey } });
+    await rollbackSnapshot(s3, bucket, { targetSha, reason, retentionLimit });
+    return;
+  }
+
+  if (process.argv[2] === "--unrevoke") {
+    const sha = process.argv[3];
+    if (!sha) throw new Error("--unrevoke requires a SHA-256");
+    const endpoint = requiredEnv("R2_ENDPOINT");
+    const accessKeyId = requiredEnv("R2_ACCESS_KEY_ID");
+    const secretAccessKey = requiredEnv("R2_SECRET_ACCESS_KEY");
+    const s3 = new S3Client({ region: "auto", endpoint, credentials: { accessKeyId, secretAccessKey } });
+    await unrevokeSha(s3, bucket, sha, retentionLimit);
+    return;
+  }
+
   const outDir = resolve(process.env.RULES_OUT_DIR || "dist/rules");
 
   const localLatest = JSON.parse(await readFile(resolve(outDir, "latest.json"), "utf8"));
@@ -344,6 +371,20 @@ async function main() {
   });
 
   const current = await readCurrentManifest(s3, bucket);
+  if (current) assertManifestInvariants(current, retentionLimit);
+
+  // FIX 2: a regenerated revoked SHA is rejected before any artifact PUT.
+  if (current?.revoked?.some((entry) => entry.sha256 === actualSha)) {
+    console.log(JSON.stringify({
+      event: "skipped_revoked",
+      sha256: actualSha,
+      actor: process.env.GITHUB_ACTOR || process.env.USER || "unknown",
+      runId: process.env.GITHUB_RUN_ID || "local",
+      runAttempt: process.env.GITHUB_RUN_ATTEMPT || "1",
+      eventName: process.env.GITHUB_EVENT_NAME || "manual",
+    }, null, 2));
+    return;
+  }
 
   if (current?.sha256 === actualSha) {
     validateKey(current.key ?? binaryKey, actualSha);
@@ -385,32 +426,20 @@ async function main() {
     statsBody.byteLength,
   );
 
-  const manifest = {
-    format: "EDNS-v1",
-    sha256: newEntry.sha256,
-    key: newEntry.key,
-    stats: newEntry.stats,
-    rules: newEntry.rules,
-    version: newEntry.version,
-    generatedAt: newEntry.generatedAt,
-    publishedAt: new Date().toISOString(),
-    history: retained,
-  };
+  // FIX 2: canonical projection preserves the existing revoked ledger.
+  const manifest = projectManifestFromHistory(
+    retained,
+    current?.revoked ?? [],
+    new Date().toISOString(),
+  );
+  assertManifestInvariants(manifest, retentionLimit);
   await putObject(s3, bucket, LATEST_KEY, Buffer.from(JSON.stringify(manifest, null, 2) + "\n"), "application/json");
 
   const published = JSON.parse(await bodyToString(
     (await s3.send(new GetObjectCommand({ Bucket: bucket, Key: LATEST_KEY }))).Body
   ));
-  if (
-    published.sha256 !== newEntry.sha256 ||
-    published.key !== newEntry.key ||
-    published.stats !== newEntry.stats ||
-    published.rules !== newEntry.rules ||
-    published.version !== newEntry.version ||
-    published.generatedAt !== newEntry.generatedAt ||
-    published.history?.[0]?.sha256 !== newEntry.sha256 ||
-    published.history?.[0]?.rules !== newEntry.rules
-  ) {
+  assertManifestInvariants(published, retentionLimit);
+  if (published.sha256 !== newEntry.sha256 || published.history?.[0]?.sha256 !== newEntry.sha256) {
     throw new Error("latest.json verification failed after publish");
   }
 
