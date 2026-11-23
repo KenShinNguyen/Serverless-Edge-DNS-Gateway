@@ -139,10 +139,14 @@ async function main() {
   await writeFile(resolve(OUT_DIR, `stats-${sha256}.json`), JSON.stringify(stats, null, 2) + "\n");
   await writeFile(resolve(OUT_DIR, "latest.json"), JSON.stringify({
     format: "EDNS-v1",
+    version: sha256,
     sha256,
+    key: `compiled/${fileName}`,
     object: fileName,
     stats: `stats-${sha256}.json`,
+    ruleCount: rules.length,
     rules: rules.length,
+    generatedAt: stats.generatedAt,
   }, null, 2) + "\n");
 
   console.log(JSON.stringify(stats, null, 2));
