@@ -33,11 +33,11 @@ jobs:
     name: Edge function tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: '22'
+          node-version: '24'
 
       - name: Syntax check
         run: node --check 'functions/[[path]].js'
@@ -49,7 +49,7 @@ jobs:
     name: Shell script lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # shellcheck có sẵn trên runner ubuntu-latest, không cần cài thêm.
       - name: ShellCheck
@@ -62,7 +62,7 @@ jobs:
     name: Rule file sanity
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # Edge function đọc các file này theo từng dòng và không xác thực gì cả.
       # Một dòng rác lọt vào rules/private_tlds.txt sẽ lặng lẽ trả NXDOMAIN cho
