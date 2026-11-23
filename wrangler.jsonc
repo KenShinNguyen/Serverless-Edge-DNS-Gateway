@@ -23,6 +23,8 @@
   },
   "vars": {
     "ECS_MODE": "selective",
+    "UPSTREAM_ECS": "https://dns.google/dns-query",
+    "UPSTREAM_ECS_FALLBACK": "https://dns11.quad9.net/dns-query",
     "BLOCK_AAAA": "false",
     "BLOCK_HTTPS": "false",
     "BLOCK_ANY": "true",
