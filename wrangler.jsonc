@@ -27,6 +27,13 @@
     "BLOCK_HTTPS": "false",
     "BLOCK_ANY": "true",
     "BLOCK_PRIVATE_TLD": "true",
-    "COMPLIANCE_MODE": "strict"
-  }
+    "COMPLIANCE_MODE": "strict",
+    "GEO_BYPASS_MODE": "allowlist"
+  },
+  "r2_buckets": [
+    {
+      "binding": "RULES_BUCKET",
+      "bucket_name": "dns-compiled-rules"
+    }
+  ]
 }
