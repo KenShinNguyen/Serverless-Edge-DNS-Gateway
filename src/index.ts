@@ -954,10 +954,9 @@ async function handleDNSQuery(request, context) {
   let queryDomain = '';
 
   // Load data if any domain-based filter is enabled
-  if (AD_BLOCK_ENABLED || BLOCK_PRIVATE_TLD || DNS_REDIRECT_ENABLED || MULLVAD_UPSTREAM_ENABLED) {
-    if (!context.env?.RULES_BUCKET) {
-      await ensureBlocklistsLoaded(request.url, context);
-    }
+  if (BLOCK_PRIVATE_TLD || DNS_REDIRECT_ENABLED || MULLVAD_UPSTREAM_ENABLED ||
+      (AD_BLOCK_ENABLED && !context.env?.RULES_BUCKET)) {
+    await ensureBlocklistsLoaded(request.url, context);
 
     // Parse domains once for both filters
     const domains = extractAllDomains(query);
@@ -1055,7 +1054,8 @@ async function handleRequest(request, context) {
 
   if (route === 'debug') {
     if (!DEBUG_ENABLED) return new Response('Not Found', { status: 404 });
-    if (AD_BLOCK_ENABLED || BLOCK_PRIVATE_TLD || DNS_REDIRECT_ENABLED) {
+    if (BLOCK_PRIVATE_TLD || DNS_REDIRECT_ENABLED || MULLVAD_UPSTREAM_ENABLED ||
+        (AD_BLOCK_ENABLED && !context.env?.RULES_BUCKET)) {
       await ensureBlocklistsLoaded(request.url, context);
     }
     return new Response(JSON.stringify({
