@@ -40,10 +40,13 @@ jobs:
           node-version: '24'
 
       - name: Syntax check
-        run: node --check 'functions/[[path]].js'
+        run: npm install --ignore-scripts
+
+      - name: TypeScript check
+        run: npm run typecheck
 
       - name: Run tests
-        run: node --test 'test/*.test.mjs'
+        run: npm test
 
   shell:
     name: Shell script lint
