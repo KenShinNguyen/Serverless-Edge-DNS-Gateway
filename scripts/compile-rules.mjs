@@ -3,11 +3,14 @@ import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { domainToASCII } from "node:url";
 import { resolve } from "node:path";
-
-const MAGIC = Buffer.from("EDNS");
-const VERSION = 1;
-const OFFSET_MASK = 0x3fffffff;
-const ALLOW_FLAG = 0x40000000;
+import {
+  ALLOW_FLAG,
+  EDNS_FORMAT_VERSION,
+  EDNS_HEADER_BYTES,
+  EDNS_MAGIC,
+  OFFSET_MASK,
+  validateEdnsV1Buffer,
+} from "../src/rules-binary-format.ts";
 
 const ROOT = resolve(process.cwd());
 const OUT_DIR = resolve(process.env.RULES_OUT_DIR || "dist/rules");
@@ -62,10 +65,10 @@ function buildBinary(effective) {
   }
 
   const indexBytes = (rules.length + 1) * 4;
-  const buffer = Buffer.allocUnsafe(16 + indexBytes + poolBytes);
+  const buffer = Buffer.allocUnsafe(EDNS_HEADER_BYTES + indexBytes + poolBytes);
 
-  MAGIC.copy(buffer, 0);
-  buffer.writeUInt16LE(VERSION, 4);
+  buffer.writeUInt32LE(EDNS_MAGIC, 0);
+  buffer.writeUInt16LE(EDNS_FORMAT_VERSION, 4);
   buffer.writeUInt16LE(0, 6);
   buffer.writeUInt32LE(rules.length, 8);
   buffer.writeUInt32LE(poolBytes, 12);
@@ -73,11 +76,11 @@ function buildBinary(effective) {
   let offset = 0;
   for (let i = 0; i < rules.length; i++) {
     const action = effective.get(rules[i]) === "ALLOW" ? ALLOW_FLAG : 0;
-    buffer.writeUInt32LE(action | offset, 16 + i * 4);
-    encoded[i].copy(buffer, 16 + indexBytes + offset);
+    buffer.writeUInt32LE(action | offset, EDNS_HEADER_BYTES + i * 4);
+    encoded[i].copy(buffer, EDNS_HEADER_BYTES + indexBytes + offset);
     offset += encoded[i].length;
   }
-  buffer.writeUInt32LE(offset, 16 + rules.length * 4);
+  buffer.writeUInt32LE(offset, EDNS_HEADER_BYTES + rules.length * 4);
 
   return { buffer, rules, poolBytes };
 }
@@ -99,7 +102,6 @@ async function main() {
   await readRules(BLOCK_FILE, block);
   await readRules(ALLOW_FILE, allow);
 
-  // Deterministic policy: ALLOW wins at the same domain.
   const effective = new Map();
   for (const domain of block) effective.set(domain, "BLOCK");
   for (const domain of allow) effective.set(domain, "ALLOW");
@@ -114,11 +116,16 @@ async function main() {
   }
 
   const { buffer, rules, poolBytes } = buildBinary(effective);
-  const sha256 = createHash("sha256").update(buffer).digest("hex");
+  const validated = validateEdnsV1Buffer(buffer);
+  if (validated.count !== rules.length) {
+    throw new Error(`Compiled rule count mismatch: binary=${validated.count}, source=${rules.length}`);
+  }
+
+  const sha256 = createHash("sha256").update(validated.bytes).digest("hex");
   const fileName = `rules-${sha256}.bin`;
 
   await mkdir(OUT_DIR, { recursive: true });
-  await writeFile(resolve(OUT_DIR, fileName), buffer);
+  await writeFile(resolve(OUT_DIR, fileName), validated.bytes);
 
   const stats = {
     format: "EDNS-v1",
@@ -127,7 +134,7 @@ async function main() {
     allowRules: [...effective.values()].filter((v) => v === "ALLOW").length,
     blockRules: [...effective.values()].filter((v) => v === "BLOCK").length,
     poolBytes,
-    binaryBytes: buffer.length,
+    binaryBytes: validated.bytes.byteLength,
     sources: {
       blocklist: BLOCK_FILE.replace(ROOT + "/", ""),
       allowlist: ALLOW_FILE.replace(ROOT + "/", ""),
@@ -144,7 +151,6 @@ async function main() {
     key: `compiled/${fileName}`,
     object: fileName,
     stats: `stats-${sha256}.json`,
-    ruleCount: rules.length,
     rules: rules.length,
     generatedAt: stats.generatedAt,
   }, null, 2) + "\n");

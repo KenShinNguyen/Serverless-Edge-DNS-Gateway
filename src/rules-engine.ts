@@ -1,7 +1,9 @@
-const MAGIC = 0x534e4445; // "EDNS" little-endian
-const VERSION = 1;
-const OFFSET_MASK = 0x3fffffff;
-const ALLOW_FLAG = 0x40000000;
+import {
+  ALLOW_FLAG,
+  OFFSET_MASK,
+  validateEdnsV1Buffer,
+} from "./rules-binary-format.ts";
+
 const DOT_BYTE = 0x2e;
 
 export type RuleDecision = "ALLOW" | "BLOCK" | "PASS";
@@ -12,50 +14,15 @@ export class ZeroCopyRuleTable {
   private readonly pool: Uint8Array;
   private readonly scratch = new Uint8Array(255);
 
-  constructor(buffer: ArrayBuffer) {
-    if (buffer.byteLength < 20) {
-      throw new Error("Invalid binary rule buffer: too small");
-    }
+  constructor(input: ArrayBuffer | ArrayBufferView) {
+    const validated = validateEdnsV1Buffer(input);
+    this.count = validated.count;
+    this.index = validated.index;
+    this.pool = validated.pool;
+  }
 
-    const header = new DataView(buffer, 0, 16);
-    if (header.getUint32(0, true) !== MAGIC) {
-      throw new Error("Invalid binary rule magic");
-    }
-
-    if (header.getUint16(4, true) !== VERSION) {
-      throw new Error(`Unsupported binary rule version: ${header.getUint16(4, true)}`);
-    }
-
-    const count = header.getUint32(8, true);
-    const poolBytes = header.getUint32(12, true);
-    const indexBytes = (count + 1) * 4;
-    const poolOffset = 16 + indexBytes;
-
-    if (count > OFFSET_MASK) {
-      throw new Error("Rule count exceeds binary format limit");
-    }
-    if (poolOffset < 16 || poolOffset + poolBytes > buffer.byteLength) {
-      throw new Error("Corrupted binary rule buffer bounds");
-    }
-
-    this.count = count;
-    this.index = new Uint32Array(buffer, 16, count + 1);
-    this.pool = new Uint8Array(buffer, poolOffset, poolBytes);
-
-    const sentinel = this.index[count] & OFFSET_MASK;
-    if (sentinel !== poolBytes) {
-      throw new Error("Corrupted binary rule sentinel");
-    }
-
-    let previousOffset = 0;
-    for (let i = 0; i < count; i++) {
-      const start = this.index[i] & OFFSET_MASK;
-      const end = this.index[i + 1] & OFFSET_MASK;
-      if (start < previousOffset || start > end || end > poolBytes) {
-        throw new Error("Corrupted binary rule offsets");
-      }
-      previousOffset = start;
-    }
+  public get ruleCount(): number {
+    return this.count;
   }
 
   public evaluate(qname: string): RuleDecision {
@@ -118,12 +85,11 @@ export class ZeroCopyRuleTable {
   }
 }
 
-
 export interface RuleManifest {
   version: string;
   sha256: string;
   key: string;
-  ruleCount: number;
+  rules: number;
   generatedAt: string;
 }
 
@@ -166,6 +132,10 @@ export class RuleSnapshotManager {
     return this.active ? this.active.version : null;
   }
 
+  public getLoadedRuleCount(): number | null {
+    return this.active ? this.active.table.ruleCount : null;
+  }
+
   private triggerReload(bucket: R2Bucket): Promise<void> {
     if (this.inFlight) return this.inFlight;
 
@@ -190,18 +160,34 @@ export class RuleSnapshotManager {
         typeof manifest.key !== "string" ||
         typeof manifest.sha256 !== "string" ||
         !SHA256_HEX_RE.test(manifest.sha256) ||
-        !/^compiled\/rules-[0-9a-f]{64}\.bin$/.test(manifest.key)
+        !/^compiled\/rules-[0-9a-f]{64}\.bin$/.test(manifest.key) ||
+        !Number.isInteger(manifest.rules) ||
+        (manifest.rules ?? -1) < 0
       ) {
         throw new Error("Invalid latest.json schema");
       }
 
       if (this.active && this.active.sha256 === manifest.sha256) {
+        if (this.active.table.ruleCount !== manifest.rules) {
+          throw new Error(
+            `Rule count mismatch: manifest=${manifest.rules}, active=${this.active.table.ruleCount}`
+          );
+        }
         this.nextCheckAt = Date.now() + REVALIDATE_MS;
         return;
       }
 
       const buffer = await this.fetchImmutableBinary(bucket, manifest.key, manifest.sha256);
-      const digest = await crypto.subtle.digest("SHA-256", buffer);
+      const validated = validateEdnsV1Buffer(buffer);
+      if (validated.count !== manifest.rules) {
+        throw new Error(
+          `Rule count mismatch: manifest=${manifest.rules}, binary=${validated.count}`
+        );
+      }
+
+      const digestInput = new Uint8Array(validated.bytes.byteLength);
+      digestInput.set(validated.bytes);
+      const digest = await crypto.subtle.digest("SHA-256", digestInput);
       const actualHex = Array.from(new Uint8Array(digest))
         .map((b) => b.toString(16).padStart(2, "0"))
         .join("");
@@ -210,7 +196,12 @@ export class RuleSnapshotManager {
         throw new Error("Rule binary SHA-256 mismatch");
       }
 
-      const nextTable = new ZeroCopyRuleTable(buffer);
+      const nextTable = new ZeroCopyRuleTable(validated.bytes);
+      if (nextTable.ruleCount !== manifest.rules) {
+        throw new Error(
+          `Rule count mismatch after table construction: manifest=${manifest.rules}, table=${nextTable.ruleCount}`
+        );
+      }
 
       this.active = {
         version: manifest.version,

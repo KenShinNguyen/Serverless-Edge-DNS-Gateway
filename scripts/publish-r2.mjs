@@ -10,41 +10,90 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { validateEdnsV1Buffer } from "../src/rules-binary-format.ts";
 
 const DEFAULT_BUCKET = "dns-compiled-rules";
 const LATEST_KEY = "compiled/latest.json";
-const RETENTION = 5;
+const DEFAULT_RETENTION_LIMIT = 5;
 const SHA_RE = /^[0-9a-f]{64}$/;
 
-export function buildRetainedVersions(currentManifest, newEntry) {
+export function resolveRetentionLimit(envVal = process.env.RETENTION_LIMIT) {
+  if (envVal === undefined || envVal === "") return DEFAULT_RETENTION_LIMIT;
+
+  const trimmed = String(envVal).trim();
+  if (!/^[1-9]\d*$/.test(trimmed)) {
+    throw new Error(`Invalid RETENTION_LIMIT: "${envVal}" (must be a positive integer)`);
+  }
+
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 50) {
+    throw new Error(`RETENTION_LIMIT out of range [1..50]: ${parsed}`);
+  }
+  return parsed;
+}
+
+export function isMissingObjectError(error) {
+  const status = error?.$metadata?.httpStatusCode;
+  if (status === 404) return true;
+  if (typeof status === "number" && status !== 404) return false;
+  const name = error?.name ?? error?.Code;
+  return name === "NotFound" || name === "NoSuchKey";
+}
+
+function assertRulesCount(rules, label) {
+  if (!Number.isInteger(rules) || rules < 0) {
+    throw new Error(`Invalid rule count in ${label}: ${rules}`);
+  }
+}
+
+function normalizeHistoryEntry(entry, label = "history entry") {
+  if (!entry || !SHA_RE.test(entry.sha256)) {
+    throw new Error(`Invalid SHA-256 in ${label}`);
+  }
+  assertRulesCount(entry.rules, label);
+  return {
+    sha256: entry.sha256,
+    version: String(entry.version ?? "unknown"),
+    generatedAt: entry.generatedAt ?? null,
+    key: `compiled/rules-${entry.sha256}.bin`,
+    stats: `compiled/stats-${entry.sha256}.json`,
+    rules: entry.rules,
+  };
+}
+
+export function buildRetainedVersions(currentManifest, newEntry, retentionLimit = DEFAULT_RETENTION_LIMIT) {
+  if (!Number.isSafeInteger(retentionLimit) || retentionLimit < 1) {
+    throw new Error(`Invalid retentionLimit: ${retentionLimit}`);
+  }
+
   const candidates = [
-    newEntry,
-    ...(Array.isArray(currentManifest?.history) ? currentManifest.history : []),
-    currentManifest?.sha256
-      ? [{
-          sha256: currentManifest.sha256,
-          version: currentManifest.version ?? "legacy",
-          generatedAt: currentManifest.generatedAt ?? null,
-          key: currentManifest.key ?? `compiled/rules-${currentManifest.sha256}.bin`,
-          stats: currentManifest.stats ?? `compiled/stats-${currentManifest.sha256}.json`,
-        }]
-      : [],
+    normalizeHistoryEntry(newEntry, "new entry"),
+    ...(Array.isArray(currentManifest?.history)
+      ? currentManifest.history.map((entry, i) => normalizeHistoryEntry(entry, `history[${i}]`))
+      : []),
   ];
+
+  if (currentManifest?.sha256) {
+    validateSha(currentManifest.sha256);
+    assertRulesCount(currentManifest.rules, "current manifest");
+    candidates.push({
+      sha256: currentManifest.sha256,
+      version: String(currentManifest.version ?? "legacy"),
+      generatedAt: currentManifest.generatedAt ?? null,
+      key: `compiled/rules-${currentManifest.sha256}.bin`,
+      stats: `compiled/stats-${currentManifest.sha256}.json`,
+      rules: currentManifest.rules,
+    });
+  }
 
   const seen = new Set();
   const retained = [];
 
   for (const entry of candidates) {
-    if (!entry || !SHA_RE.test(entry.sha256) || seen.has(entry.sha256)) continue;
+    if (seen.has(entry.sha256)) continue;
     seen.add(entry.sha256);
-    retained.push({
-      sha256: entry.sha256,
-      version: String(entry.version ?? "unknown"),
-      generatedAt: entry.generatedAt ?? null,
-      key: `compiled/rules-${entry.sha256}.bin`,
-      stats: `compiled/stats-${entry.sha256}.json`,
-    });
-    if (retained.length === RETENTION) break;
+    retained.push(entry);
+    if (retained.length === retentionLimit) break;
   }
 
   return retained;
@@ -77,21 +126,85 @@ async function readCurrentManifest(s3, bucket) {
     const response = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: LATEST_KEY }));
     return JSON.parse(await bodyToString(response.Body));
   } catch (error) {
-    if (error?.name === "NoSuchKey" || error?.$metadata?.httpStatusCode === 404) return null;
+    if (isMissingObjectError(error)) return null;
     throw error;
   }
 }
 
-async function headRequiredObjects(s3, bucket, entries) {
+async function headObject(s3, bucket, key) {
+  return s3.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+}
+
+export async function verifyAndHealHistory(s3, bucket, entries) {
+  const healed = [];
+
   for (const entry of entries) {
-    const binary = await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: entry.key }));
-    const stats = await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: entry.stats }));
-    if (!Number.isInteger(binary.ContentLength) || binary.ContentLength <= 0) {
-      throw new Error(`Pinned binary missing/empty: ${entry.key}`);
+    const results = await Promise.allSettled([
+      headObject(s3, bucket, entry.key),
+      headObject(s3, bucket, entry.stats),
+    ]);
+
+    const fatalErrors = [];
+    let drop = false;
+
+    for (const result of results) {
+      if (result.status === "rejected") {
+        if (isMissingObjectError(result.reason)) {
+          drop = true;
+        } else {
+          fatalErrors.push(result.reason);
+        }
+        continue;
+      }
+
+      if (!Number.isInteger(result.value.ContentLength) || result.value.ContentLength <= 0) {
+        drop = true;
+      }
     }
-    if (!Number.isInteger(stats.ContentLength) || stats.ContentLength <= 0) {
-      throw new Error(`Pinned stats missing/empty: ${entry.stats}`);
+
+    if (fatalErrors.length) throw fatalErrors[0];
+    if (drop) {
+      console.warn(`Dropping stale history entry with missing/empty object pair: ${entry.sha256}`);
+      continue;
     }
+
+    healed.push(entry);
+  }
+
+  return healed;
+}
+
+export async function verifyNewlyPublishedPair(
+  s3,
+  bucket,
+  binaryKey,
+  statsKey,
+  expectedBinaryBytes,
+  expectedStatsBytes,
+) {
+  const results = await Promise.allSettled([
+    headObject(s3, bucket, binaryKey),
+    headObject(s3, bucket, statsKey),
+  ]);
+
+  for (const result of results) {
+    if (result.status === "rejected") {
+      throw result.reason;
+    }
+  }
+
+  const binaryHead = results[0].value;
+  const statsHead = results[1].value;
+
+  if (binaryHead.ContentLength !== expectedBinaryBytes || binaryHead.ContentLength <= 0) {
+    throw new Error(
+      `Binary ContentLength mismatch: expected ${expectedBinaryBytes}, got ${binaryHead.ContentLength}`
+    );
+  }
+  if (statsHead.ContentLength !== expectedStatsBytes || statsHead.ContentLength <= 0) {
+    throw new Error(
+      `Stats ContentLength mismatch: expected ${expectedStatsBytes}, got ${statsHead.ContentLength}`
+    );
   }
 }
 
@@ -153,8 +266,6 @@ async function pruneUnpinned(s3, bucket, pinnedSet) {
 
   if (!deletions.length) return 0;
 
-  // R2 implements DeleteObjects. Keep the batch comfortably below the S3
-  // 1000-object request limit even if the retention policy changes later.
   let deleted = 0;
   for (let i = 0; i < deletions.length; i += 1000) {
     const batch = deletions.slice(i, i + 1000);
@@ -171,6 +282,7 @@ async function pruneUnpinned(s3, bucket, pinnedSet) {
 async function main() {
   const dryRun = process.argv.includes("--dry-run");
   const bucket = process.env.R2_BUCKET_NAME || DEFAULT_BUCKET;
+  const retentionLimit = resolveRetentionLimit();
   const outDir = resolve(process.env.RULES_OUT_DIR || "dist/rules");
 
   const localLatest = JSON.parse(await readFile(resolve(outDir, "latest.json"), "utf8"));
@@ -179,10 +291,18 @@ async function main() {
   const statsKey = `compiled/stats-${localLatest.sha256}.json`;
 
   validateSha(localLatest.sha256);
-  validateKey(localLatest.object, localLatest.sha256);
+  validateKey(localLatest.key, localLatest.sha256);
+  assertRulesCount(localLatest.rules, "local latest.json");
 
-  const binary = await readFile(resolve(outDir, localLatest.object));
-  const actualSha = createHash("sha256").update(binary).digest("hex");
+  const binary = await readFile(resolve(outDir, localLatest.object ?? `rules-${localLatest.sha256}.bin`));
+  const validated = validateEdnsV1Buffer(binary);
+  if (validated.count !== localLatest.rules) {
+    throw new Error(
+      `Rule count mismatch: manifest=${localLatest.rules}, binary=${validated.count}`
+    );
+  }
+
+  const actualSha = createHash("sha256").update(validated.bytes).digest("hex");
   if (actualSha !== localLatest.sha256) {
     throw new Error(`Local binary SHA mismatch: manifest=${localLatest.sha256}, actual=${actualSha}`);
   }
@@ -195,6 +315,7 @@ async function main() {
     generatedAt,
     key: binaryKey,
     stats: statsKey,
+    rules: validated.count,
   };
 
   if (dryRun) {
@@ -204,9 +325,10 @@ async function main() {
       endpoint: process.env.R2_ENDPOINT || null,
       binaryKey,
       statsKey,
-      binaryBytes: binary.byteLength,
+      binaryBytes: validated.bytes.byteLength,
       sha256: actualSha,
-      plannedRetention: buildRetainedVersions(null, newEntry),
+      retentionLimit,
+      plannedRetention: buildRetainedVersions(null, newEntry, retentionLimit),
     }, null, 2));
     return;
   }
@@ -225,64 +347,73 @@ async function main() {
 
   if (current?.sha256 === actualSha) {
     validateKey(current.key ?? binaryKey, actualSha);
-    await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: binaryKey }));
+    await headObject(s3, bucket, binaryKey);
     console.log(JSON.stringify({ status: "unchanged", sha256: actualSha, key: binaryKey }, null, 2));
     return;
   }
 
-  const retained = buildRetainedVersions(current, newEntry);
+  let healedHistory = [];
+  if (current?.history) {
+    healedHistory = await verifyAndHealHistory(s3, bucket, current.history);
+    if (!healedHistory.some((entry) => entry.sha256 === current.sha256)) {
+      throw new Error(`Active current history entry is missing or empty: ${current.sha256}`);
+    }
+  }
+  const healedCurrent = current ? { ...current, history: healedHistory } : null;
+  const retained = buildRetainedVersions(healedCurrent, newEntry, retentionLimit);
 
-  // If the previous manifest has a history, prove every pinned predecessor
-  // still exists before publishing a new pointer. Otherwise we could publish
-  // a "rollback history" containing dead objects.
-  if (current) {
-    await headRequiredObjects(s3, bucket, retained.slice(1));
+  if (healedCurrent) {
+    await verifyAndHealHistory(s3, bucket, retained.slice(1));
   }
 
-  // 1-2. Immutable artifacts first.
-  await putObject(s3, bucket, binaryKey, binary, "application/octet-stream");
+  await putObject(s3, bucket, binaryKey, validated.bytes, "application/octet-stream");
   const statsBody = Buffer.from(JSON.stringify({
     ...localStats,
     sha256: actualSha,
+    rules: validated.count,
     publishedVersion: version,
     publishedAt: new Date().toISOString(),
   }, null, 2) + "\n");
   await putObject(s3, bucket, statsKey, statsBody, "application/json");
 
-  // 3. Verify the exact byte lengths before changing the pointer.
-  const binaryHead = await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: binaryKey }));
-  const statsHead = await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: statsKey }));
-  if (binaryHead.ContentLength !== binary.byteLength) {
-    throw new Error(`Binary ContentLength mismatch: expected ${binary.byteLength}, got ${binaryHead.ContentLength}`);
-  }
-  if (statsHead.ContentLength !== statsBody.byteLength) {
-    throw new Error(`Stats ContentLength mismatch: expected ${statsBody.byteLength}, got ${statsHead.ContentLength}`);
-  }
+  await verifyNewlyPublishedPair(
+    s3,
+    bucket,
+    binaryKey,
+    statsKey,
+    validated.bytes.byteLength,
+    statsBody.byteLength,
+  );
 
-  // 4. latest.json is the commit point. It is written last.
   const manifest = {
     format: "EDNS-v1",
-    sha256: actualSha,
-    key: binaryKey,
-    stats: statsKey,
-    rules: localLatest.rules,
-    version,
-    generatedAt,
+    sha256: newEntry.sha256,
+    key: newEntry.key,
+    stats: newEntry.stats,
+    rules: newEntry.rules,
+    version: newEntry.version,
+    generatedAt: newEntry.generatedAt,
     publishedAt: new Date().toISOString(),
     history: retained,
   };
   await putObject(s3, bucket, LATEST_KEY, Buffer.from(JSON.stringify(manifest, null, 2) + "\n"), "application/json");
 
-  // 5. Read the pointer back before pruning anything.
   const published = JSON.parse(await bodyToString(
     (await s3.send(new GetObjectCommand({ Bucket: bucket, Key: LATEST_KEY }))).Body
   ));
-  if (published.sha256 !== actualSha || published.key !== binaryKey) {
+  if (
+    published.sha256 !== newEntry.sha256 ||
+    published.key !== newEntry.key ||
+    published.stats !== newEntry.stats ||
+    published.rules !== newEntry.rules ||
+    published.version !== newEntry.version ||
+    published.generatedAt !== newEntry.generatedAt ||
+    published.history?.[0]?.sha256 !== newEntry.sha256 ||
+    published.history?.[0]?.rules !== newEntry.rules
+  ) {
     throw new Error("latest.json verification failed after publish");
   }
 
-  // 6-7. Prune only content-addressed artifacts not explicitly pinned by the
-  // five-entry history ring. Never infer retention from LastModified.
   const pinnedSet = new Set(retained.map((entry) => entry.sha256));
   const deleted = await pruneUnpinned(s3, bucket, pinnedSet);
 
@@ -290,6 +421,8 @@ async function main() {
     status: "published",
     sha256: actualSha,
     version,
+    rules: validated.count,
+    retentionLimit,
     retainedVersions: retained.map((entry) => entry.sha256),
     deletedObjects: deleted,
   }, null, 2));

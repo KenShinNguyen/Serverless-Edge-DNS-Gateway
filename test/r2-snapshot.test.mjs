@@ -31,7 +31,7 @@ function manifestFor(buffer, version) {
     version,
     sha256,
     key: `compiled/rules-${sha256}.bin`,
-    ruleCount: 1,
+    rules: 1,
     generatedAt: new Date().toISOString(),
   };
 }
@@ -67,6 +67,7 @@ test("cold-start concurrent evaluations use one R2 reload", async () => {
   );
 
   assert.deepEqual(new Set(results), new Set(["BLOCK"]));
+  assert.equal(manager.getLoadedRuleCount(), 1);
   assert.equal(bucket.gets.filter((key) => key === "compiled/latest.json").length, 1);
   assert.equal(bucket.gets.filter((key) => key === manifest.key).length, 1);
 });
@@ -104,8 +105,6 @@ test("corrupt v2 rolls back to the active v1 snapshot", async () => {
   bucket.objects.set("compiled/latest.json", JSON.stringify(m2));
   bucket.objects.set(m2.key, corrupt);
 
-  // Force the manager to revalidate without sleeping five minutes. Private
-  // fields are runtime properties after TypeScript stripping.
   manager.nextCheckAt = 0;
   const result = await manager.evaluate("ads.example.com", bucket, ctx());
   assert.equal(result, "BLOCK");
@@ -123,7 +122,6 @@ test("unchanged manifest does not reload the binary", async () => {
   assert.equal(await manager.evaluate("ads.example.com", bucket, ctx()), "BLOCK");
   const binaryGets = bucket.gets.filter((key) => key === manifest.key).length;
 
-  // The snapshot is still fresh, so this call must not touch R2 at all.
   assert.equal(await manager.evaluate("ads.example.com", bucket, ctx()), "BLOCK");
   assert.equal(bucket.gets.filter((key) => key === manifest.key).length, binaryGets);
 });
