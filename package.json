@@ -1,0 +1,12 @@
+{
+  "name": "serverless-edge-dns-gateway",
+  "private": true,
+  "scripts": {
+    "test": "node --test 'test/*.test.mjs'",
+    "check": "node --check 'functions/[[path]].js'"
+  },
+  "devDependencies": {
+    "wrangler": "^4.50.0",
+    "typescript": "^5.9.0"
+  }
+}
