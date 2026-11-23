@@ -9,6 +9,7 @@
       "@cloudflare/workers-types"
     ],
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "noImplicitAny": false,
     "noUnusedLocals": false
   },
