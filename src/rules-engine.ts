@@ -47,12 +47,14 @@ export class ZeroCopyRuleTable {
       throw new Error("Corrupted binary rule sentinel");
     }
 
+    let previousOffset = 0;
     for (let i = 0; i < count; i++) {
       const start = this.index[i] & OFFSET_MASK;
       const end = this.index[i + 1] & OFFSET_MASK;
-      if (start > end || end > poolBytes) {
+      if (start < previousOffset || start > end || end > poolBytes) {
         throw new Error("Corrupted binary rule offsets");
       }
+      previousOffset = start;
     }
   }
 
@@ -113,5 +115,147 @@ export class ZeroCopyRuleTable {
     }
 
     return -1;
+  }
+}
+
+
+export interface RuleManifest {
+  version: string;
+  sha256: string;
+  key: string;
+  ruleCount: number;
+  generatedAt: string;
+}
+
+interface SnapshotState {
+  version: string;
+  sha256: string;
+  table: ZeroCopyRuleTable;
+}
+
+const REVALIDATE_MS = 5 * 60 * 1000;
+const ERROR_COOLDOWN_MS = 60 * 1000;
+const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
+
+export class RuleSnapshotManager {
+  private active: SnapshotState | null = null;
+  private nextCheckAt = 0;
+  private inFlight: Promise<void> | null = null;
+
+  public async evaluate(
+    qname: string,
+    bucket: R2Bucket | undefined,
+    ctx: ExecutionContext
+  ): Promise<RuleDecision> {
+    if (!bucket) return "PASS";
+
+    const now = Date.now();
+
+    if (!this.active) {
+      if (now >= this.nextCheckAt) {
+        await this.triggerReload(bucket);
+      }
+    } else if (now >= this.nextCheckAt && !this.inFlight) {
+      ctx.waitUntil(this.triggerReload(bucket));
+    }
+
+    return this.active ? this.active.table.evaluate(qname) : "PASS";
+  }
+
+  public getLoadedVersion(): string | null {
+    return this.active ? this.active.version : null;
+  }
+
+  private triggerReload(bucket: R2Bucket): Promise<void> {
+    if (this.inFlight) return this.inFlight;
+
+    this.inFlight = this.reloadInternal(bucket).finally(() => {
+      this.inFlight = null;
+    });
+    return this.inFlight;
+  }
+
+  private async reloadInternal(bucket: R2Bucket): Promise<void> {
+    try {
+      const manifestObj = await bucket.get("compiled/latest.json");
+      if (!manifestObj) {
+        this.nextCheckAt = Date.now() + ERROR_COOLDOWN_MS;
+        return;
+      }
+
+      const manifest = (await manifestObj.json()) as Partial<RuleManifest>;
+      if (
+        !manifest ||
+        typeof manifest.version !== "string" ||
+        typeof manifest.key !== "string" ||
+        typeof manifest.sha256 !== "string" ||
+        !SHA256_HEX_RE.test(manifest.sha256) ||
+        !/^compiled\/rules-[0-9a-f]{64}\.bin$/.test(manifest.key)
+      ) {
+        throw new Error("Invalid latest.json schema");
+      }
+
+      if (this.active && this.active.sha256 === manifest.sha256) {
+        this.nextCheckAt = Date.now() + REVALIDATE_MS;
+        return;
+      }
+
+      const buffer = await this.fetchImmutableBinary(bucket, manifest.key, manifest.sha256);
+      const digest = await crypto.subtle.digest("SHA-256", buffer);
+      const actualHex = Array.from(new Uint8Array(digest))
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+
+      if (actualHex !== manifest.sha256) {
+        throw new Error("Rule binary SHA-256 mismatch");
+      }
+
+      const nextTable = new ZeroCopyRuleTable(buffer);
+
+      this.active = {
+        version: manifest.version,
+        sha256: manifest.sha256,
+        table: nextTable,
+      };
+      this.nextCheckAt = Date.now() + REVALIDATE_MS;
+    } catch {
+      this.nextCheckAt = Date.now() + ERROR_COOLDOWN_MS;
+    }
+  }
+
+  private async fetchImmutableBinary(
+    bucket: R2Bucket,
+    key: string,
+    sha256: string
+  ): Promise<ArrayBuffer> {
+    const cacheKey = new Request(`https://r2-rules.internal/compiled/rules-${sha256}.bin`);
+    const edgeCache =
+      typeof caches !== "undefined" &&
+      "default" in caches &&
+      caches.default;
+
+    if (edgeCache) {
+      const cached = await edgeCache.match(cacheKey);
+      if (cached) return cached.arrayBuffer();
+    }
+
+    const object = await bucket.get(key);
+    if (!object) throw new Error(`Missing R2 rule binary: ${key}`);
+
+    const buffer = await object.arrayBuffer();
+
+    if (edgeCache) {
+      await edgeCache.put(
+        cacheKey,
+        new Response(buffer.slice(0), {
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "Cache-Control": "public, max-age=31536000, immutable",
+          },
+        })
+      );
+    }
+
+    return buffer;
   }
 }
