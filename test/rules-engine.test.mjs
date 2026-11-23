@@ -45,9 +45,9 @@ test("most-specific suffix wins", () => {
 
 test("hyphen ordering is byte-safe", () => {
   const table = new ZeroCopyRuleTable(buildRules([
-    ["com.example", "BLOCK"],
-    ["com.example-tracker", "ALLOW"],
-    ["com.example.ads", "BLOCK"],
+    ["example.com", "BLOCK"],
+    ["example-tracker.com", "ALLOW"],
+    ["example.ads.com", "BLOCK"],
   ]));
 
   assert.equal(table.evaluate("example.com"), "BLOCK");
