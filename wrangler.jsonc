@@ -1,0 +1,32 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "serverless-edge-dns-gateway",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-20",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": [
+      "/dns-query/*",
+      "/apple/*",
+      "/debug/*"
+    ]
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.05
+  },
+  "triggers": {
+    "crons": [
+      "0 */6 * * *"
+    ]
+  },
+  "vars": {
+    "ECS_MODE": "selective",
+    "BLOCK_AAAA": "false",
+    "BLOCK_HTTPS": "false",
+    "BLOCK_ANY": "true",
+    "BLOCK_PRIVATE_TLD": "true",
+    "COMPLIANCE_MODE": "strict"
+  }
+}
