@@ -1,0 +1,1110 @@
+// ==================== CONFIG ====================
+// Upstreams are meant to be configured per-deployment via environment
+// variables (Cloudflare Pages > Settings > Environment variables):
+//   UPSTREAM_PRIMARY, UPSTREAM_FALLBACK, UPSTREAM_GEO_BYPASS
+// Never commit a personal Cloudflare Gateway URL here — this repo is public,
+// and anyone who forks it would route their DNS traffic through your account.
+// The defaults below are public resolvers so a fresh fork works out of the box.
+// Keep all three DIFFERENT: primary/fallback on separate providers so failover
+// survives one provider going down, and geo-bypass on a third that does not
+// honour ECS. A Cloudflare Gateway endpoint always carries the account slug
+// (https://<slug>.cloudflare-gateway.com/dns-query) — the bare apex is not a
+// resolver, so it can never be a working default here; set your own slug URL
+// through the UPSTREAM_PRIMARY environment variable instead.
+let UPSTREAM_PRIMARY = 'https://cloudflare-dns.com/dns-query';
+let UPSTREAM_FALLBACK = 'https://dns.nextdns.io/e5eafd';
+let UPSTREAM_GEO_BYPASS = 'https://dns.nextdns.io/7693ac'; // Re-resolve without ECS when geo-block returns loopback
+const UPSTREAM_TIMEOUT = 5000;
+
+// Optional access token (env: DOH_TOKEN). When set, every function route
+// requires the token as a path segment: /dns-query/<token>, /apple/<token>,
+// /debug/<token>. Untokened paths return 404. This is a lightweight abuse
+// barrier for the public endpoint, not full authentication.
+let DOH_TOKEN = '';
+
+// CORS origin (env: CORS_ORIGIN). Empty = no CORS headers (default).
+// Browser/OS native DoH does not need CORS; set to '*' only if you really
+// want arbitrary websites to be able to query this endpoint via JS.
+let CORS_ORIGIN = '';
+
+// Refresh interval for ALL lists (blocklist, allowlists, private TLDs, redirect rules)
+const ALL_LISTS_REFRESH_INTERVAL = 21600000; // 6 hour
+
+// Upper bound on the Cache-Control max-age we advertise, regardless of what an
+// upstream claims. Some resolvers hand out multi-day TTLs; honouring those
+// would keep a client pinned to a stale answer long after a CDN moved.
+const MAX_RESPONSE_TTL = 3600; // 1 hour
+// Locally synthesised answers (blocked, private TLD, blocked QTYPE) have no
+// upstream TTL. Short enough that a list change takes effect quickly, long
+// enough that a chatty client is not re-asking about the same ad domain.
+const LOCAL_RESPONSE_TTL = 300; // 5 minutes
+
+const AD_BLOCK_ENABLED = true;
+const BLOCKLIST_URL = '/rules/blocklists.txt';
+const ALLOWLIST_URL = '/rules/allowlists.txt';
+
+const ECS_INJECTION_ENABLED = true;
+const ECS_PREFIX_V4 = 24;
+const ECS_PREFIX_V6 = 48;
+
+// Block query types early to save Cloudflare Pages requests
+const BLOCK_ANY = false;    // TYPE 255 — ANY queries
+const BLOCK_AAAA = false;   // TYPE 28  — IPv6 queries
+const BLOCK_PTR = false;    // TYPE 12  — Reverse DNS
+const BLOCK_HTTPS = false;  // TYPE 65  — HTTPS record queries
+
+// Block private/internal TLDs and router domains
+const BLOCK_PRIVATE_TLD = true;
+const PRIVATE_TLD_URL = '/rules/private_tlds.txt';
+
+// DNS redirect/rewrite (local CNAME overrides)
+const DNS_REDIRECT_ENABLED = true;
+const REDIRECT_RULES_URL = '/rules/redirect_rules.txt';
+
+// Dedicated Mullvad Upstream Domains
+const MULLVAD_UPSTREAM_ENABLED = true;
+const MULLVAD_UPSTREAM_URL = '/rules/mullvad_upstream.txt';
+
+// /debug endpoint — enable via env DEBUG_ENABLED=true only when needed
+let DEBUG_ENABLED = false;
+
+// Apply per-deployment overrides from Pages environment variables (once per isolate)
+let envApplied = false;
+function applyEnvConfig(env) {
+  if (envApplied || !env) return;
+  if (env.UPSTREAM_PRIMARY) UPSTREAM_PRIMARY = env.UPSTREAM_PRIMARY;
+  if (env.UPSTREAM_FALLBACK) UPSTREAM_FALLBACK = env.UPSTREAM_FALLBACK;
+  if (env.UPSTREAM_GEO_BYPASS) UPSTREAM_GEO_BYPASS = env.UPSTREAM_GEO_BYPASS;
+  if (env.DOH_TOKEN) DOH_TOKEN = env.DOH_TOKEN;
+  if (env.CORS_ORIGIN) CORS_ORIGIN = env.CORS_ORIGIN;
+  if (env.DEBUG_ENABLED === 'true') DEBUG_ENABLED = true;
+  envApplied = true;
+}
+
+// Constant-time-ish token comparison to avoid trivial timing probes
+function tokenMatches(provided, expected) {
+  if (!provided || provided.length !== expected.length) return false;
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) diff |= provided.charCodeAt(i) ^ expected.charCodeAt(i);
+  return diff === 0;
+}
+
+// Mask upstream hostnames in /debug output so a personal Gateway URL is
+// never exposed verbatim (first hostname label truncated to 3 chars)
+function maskUpstream(url) {
+  try {
+    const u = new URL(url);
+    const labels = u.hostname.split('.');
+    labels[0] = labels[0].length > 3 ? labels[0].slice(0, 3) + '***' : '***';
+    return `${u.protocol}//${labels.join('.')}${u.pathname}`;
+  } catch { return '***'; }
+}
+
+// Deterministic UUID (v5-style, SHA-1 based) derived from the deployment
+// hostname — keeps the Apple profile identity stable across downloads so a
+// reinstall replaces the existing profile instead of stacking duplicates
+async function hostUuid(host, salt) {
+  const data = new TextEncoder().encode(`serverless-edge-dns-gateway:${salt}:${host}`);
+  const hash = new Uint8Array(await crypto.subtle.digest('SHA-1', data));
+  hash[6] = (hash[6] & 0x0f) | 0x50; // version 5
+  hash[8] = (hash[8] & 0x3f) | 0x80; // RFC 4122 variant
+  const hex = [...hash.slice(0, 16)].map(b => b.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
+// Pre-compiled regex patterns for performance
+const IPV4_MAPPED_REGEX = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i;
+const IPV6_VALID_REGEX = /^[0-9a-f:]+$/i;
+const IPV6_GROUP_REGEX = /^[0-9a-f]+$/i;
+
+// ==================== STATE ====================
+let adBlocklist = new Set();
+let adAllowlist = new Set();
+let privateTlds = new Set();
+let redirectRules = new Map(); // domain → target domain
+let mullvadUpstreamDomains = new Set();
+let blocklistLastFetch = 0;
+let blocklistPromise = null;
+let blocklistsFetched = false; // Track if lists have been fetched at least once
+
+// ==================== AD BLOCK ====================
+// Walk a list body one line at a time, invoking `onLine` for each non-empty,
+// non-comment line.
+//
+// Deliberately NOT `text.split('\n')`: blocklists.txt is ~14 MB / ~790k lines,
+// and split() materialises every one of those lines as a live string before a
+// single entry is consumed. Together with the source text and the resulting
+// Set that is three copies of the list alive at once inside a 128 MB isolate.
+// Scanning with indexOf keeps only one line alive at a time, so peak memory is
+// the source text plus the Set.
+function forEachListLine(text, onLine) {
+  let start = 0;
+  while (start <= text.length) {
+    let end = text.indexOf('\n', start);
+    if (end === -1) end = text.length;
+    let line = text.slice(start, end);
+    start = end + 1;
+    // Tolerate CRLF sources without paying for a trim() on every line
+    if (line.charCodeAt(line.length - 1) === 13) line = line.slice(0, -1);
+    if (!line) continue;
+    const first = line.charCodeAt(0);
+    // '#' (35) and '!' (33) start comments; skip before any further work
+    if (first === 35 || first === 33) continue;
+    if (first === 32 || first === 9) {
+      line = line.trim();
+      if (!line || line[0] === '#' || line[0] === '!') continue;
+    }
+    onLine(line);
+  }
+}
+
+// Returns null (not an empty Set) when the list could not be fetched, so
+// callers can tell "source is down" apart from "source is legitimately empty".
+async function fetchList(url) {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+    if (!res.ok) return null;
+    const text = await res.text();
+    const domains = new Set();
+    // Lowercase so mixed-case entries still match (queries are lowercased)
+    forEachListLine(text, (line) => domains.add(line.toLowerCase()));
+    return domains;
+  } catch { return null; }
+}
+
+// Returns null on fetch failure — see fetchList.
+async function fetchRedirectRules(url) {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+    if (!res.ok) return null;
+    const text = await res.text();
+    const rules = new Map();
+    forEachListLine(text, (line) => {
+      const parts = line.split(/\s+/);
+      if (parts.length === 2) rules.set(parts[0].toLowerCase(), parts[1].toLowerCase());
+    });
+    return rules;
+  } catch { return null; }
+}
+
+async function refreshBlocklists(baseUrl) {
+  // Skip refresh if:
+  // 1. Already fetched at least once AND
+  // 2. Within refresh interval
+  if (blocklistsFetched && Date.now() - blocklistLastFetch < ALL_LISTS_REFRESH_INTERVAL) return;
+
+  if (blocklistPromise) return blocklistPromise;
+
+  blocklistPromise = (async () => {
+    try {
+      const bUrl = new URL(BLOCKLIST_URL, baseUrl).toString();
+      const aUrl = new URL(ALLOWLIST_URL, baseUrl).toString();
+      const pUrl = new URL(PRIVATE_TLD_URL, baseUrl).toString();
+      const rUrl = new URL(REDIRECT_RULES_URL, baseUrl).toString();
+      const mUrl = new URL(MULLVAD_UPSTREAM_URL, baseUrl).toString();
+
+      const [block, allow, privateList, redirRules, mullvadList] = await Promise.all([
+        AD_BLOCK_ENABLED ? fetchList(bUrl) : Promise.resolve(new Set()),
+        AD_BLOCK_ENABLED ? fetchList(aUrl) : Promise.resolve(new Set()),
+        BLOCK_PRIVATE_TLD ? fetchList(pUrl) : Promise.resolve(new Set()),
+        DNS_REDIRECT_ENABLED ? fetchRedirectRules(rUrl) : Promise.resolve(new Map()),
+        MULLVAD_UPSTREAM_ENABLED ? fetchList(mUrl) : Promise.resolve(new Set())
+      ]);
+
+      // Only install a list we actually fetched. fetchList returns null when the
+      // source is unreachable, and overwriting a good list with an empty one
+      // would silently disable filtering until the next interval elapses — one
+      // blip in serving rules/blocklists.txt would unblock every ad domain for
+      // six hours. A stale list is strictly better than no list.
+      if (AD_BLOCK_ENABLED) {
+        if (block) adBlocklist = block;
+        if (allow) adAllowlist = allow;
+      }
+      if (BLOCK_PRIVATE_TLD && privateList) privateTlds = privateList;
+      if (DNS_REDIRECT_ENABLED && redirRules) redirectRules = redirRules;
+      if (MULLVAD_UPSTREAM_ENABLED && mullvadList) mullvadUpstreamDomains = mullvadList;
+
+      // Timestamp advances even on failure: retrying every request while a
+      // source is down would stampede the origin. The next interval retries.
+      blocklistLastFetch = Date.now();
+      blocklistsFetched = true; // Mark as fetched to prevent infinite re-fetch
+    } finally { blocklistPromise = null; }
+  })();
+
+  return blocklistPromise;
+}
+
+// ==================== DNS WIRE FORMAT ====================
+// Advance past a wire-format domain name (RFC 1035 §4.1.4).
+// Returns the offset just past the name, or -1 if the name runs off the end
+// of the buffer. Every section walk in this file goes through here so a
+// truncated message fails loudly in one place instead of silently producing
+// out-of-range offsets.
+function skipName(v, off) {
+  while (off < v.length) {
+    const len = v[off];
+    if (len === 0) return off + 1;
+    // A compression pointer is always the last two bytes of a name
+    if ((len & 0xC0) === 0xC0) return off + 2 <= v.length ? off + 2 : -1;
+    off += len + 1;
+  }
+  return -1;
+}
+
+// Offset just past the question section, or -1 if the message is truncated
+function skipQuestions(v, qdcount) {
+  let off = 12;
+  for (let i = 0; i < qdcount; i++) {
+    off = skipName(v, off);
+    if (off < 0 || off + 4 > v.length) return -1;
+    off += 4; // QTYPE + QCLASS
+  }
+  return off;
+}
+
+// Extract QTYPE from first question section
+function extractQtype(buf) {
+  try {
+    const v = new Uint8Array(buf);
+    if (v.length < 12) return null;
+    const qd = (v[4] << 8) | v[5];
+    if (qd === 0) return null;
+    const off = skipName(v, 12);
+    if (off < 0 || off + 2 > v.length) return null;
+    return (v[off] << 8) | v[off + 1];
+  } catch { return null; }
+}
+
+// Build set of blocked query types from config
+function getBlockedQtypes() {
+  const blocked = new Set();
+  if (BLOCK_ANY) blocked.add(255);
+  if (BLOCK_AAAA) blocked.add(28);
+  if (BLOCK_PTR) blocked.add(12);
+  if (BLOCK_HTTPS) blocked.add(65);
+  return blocked;
+}
+const BLOCKED_QTYPES = getBlockedQtypes();
+
+// Parse all question domains
+function extractAllDomains(buf) {
+  const domains = [];
+  try {
+    const v = new Uint8Array(buf);
+    if (v.length < 12) return domains;
+    const qd = (v[4] << 8) | v[5];
+    if (qd === 0) return domains;
+    let off = 12;
+    for (let q = 0; q < qd; q++) {
+      const labels = [];
+      while (off < v.length) {
+        const len = v[off];
+        if (len === 0) { off++; break; }
+        if ((len & 0xC0) === 0xC0) { off += 2; break; }
+        off++;
+        if (off + len > v.length) return domains;
+        let label = '';
+        for (let i = 0; i < len; i++) label += String.fromCharCode(v[off + i]);
+        labels.push(label);
+        off += len;
+      }
+      if (off + 4 > v.length) break; // truncated question — drop the partial record
+      off += 4; // QTYPE + QCLASS
+      if (labels.length > 0) domains.push(labels.join('.').toLowerCase());
+    }
+  } catch { }
+  return domains;
+}
+
+function hasLoopbackInAnswer(buf) {
+  try {
+    const v = new Uint8Array(buf);
+    if (v.length < 12) return false;
+    const qd = (v[4] << 8) | v[5];
+    const an = (v[6] << 8) | v[7];
+    if (an === 0) return false;
+
+    let off = skipQuestions(v, qd);
+    if (off < 0) return false;
+
+    // Parse Answer Section
+    for (let i = 0; i < an; i++) {
+      off = skipName(v, off);
+      if (off < 0 || off + 10 > v.length) break;
+      const type = (v[off] << 8) | v[off + 1];
+      const cls = (v[off + 2] << 8) | v[off + 3];
+      const rdlen = (v[off + 8] << 8) | v[off + 9];
+      off += 10;
+      if (off + rdlen > v.length) break; // truncated rdata — stop rather than read past the end
+      if (type === 1 && cls === 1 && rdlen === 4) { // Type A, Class IN, Length 4
+        if (v[off] === 127 && v[off + 1] === 0 && v[off + 2] === 0 && v[off + 3] === 1) return true;
+      }
+      off += rdlen;
+    }
+  } catch { }
+  return false;
+}
+
+// Smallest TTL across every resource record in a response, or null when the
+// response carries none. RFC 8484 §5.1 ties the HTTP freshness lifetime of a
+// DoH response to this value: cache for longer and a client keeps serving a
+// record the authoritative server has already expired.
+function minResponseTtl(buf) {
+  try {
+    const v = new Uint8Array(buf);
+    if (v.length < 12) return null;
+    const qd = (v[4] << 8) | v[5];
+    const rrCount = ((v[6] << 8) | v[7]) + ((v[8] << 8) | v[9]) + ((v[10] << 8) | v[11]);
+    let off = skipQuestions(v, qd);
+    if (off < 0) return null;
+    let min = null;
+    for (let i = 0; i < rrCount; i++) {
+      off = skipName(v, off);
+      if (off < 0 || off + 10 > v.length) break;
+      const type = (v[off] << 8) | v[off + 1];
+      const ttl = ((v[off + 4] << 24) | (v[off + 5] << 16) | (v[off + 6] << 8) | v[off + 7]) >>> 0;
+      const rdlen = (v[off + 8] << 8) | v[off + 9];
+      off += 10 + rdlen;
+      if (off > v.length) break;
+      // OPT (RFC 6891) reuses the TTL field for flags and an extended RCODE —
+      // reading it as a lifetime would pin max-age to whatever those bits spell
+      if (type === 41) continue;
+      if (min === null || ttl < min) min = ttl;
+    }
+    return min;
+  } catch { return null; }
+}
+
+// Response headers for a DNS message, with the freshness lifetime derived from
+// the record TTLs. Caching matters here beyond politeness to the upstream: the
+// Pages free tier bills every request against a 100k/day quota, and without a
+// Cache-Control header neither the client nor Cloudflare's edge cache will
+// reuse an answer.
+// `body` is either a response buffer to read TTLs out of, an explicit TTL in
+// seconds for a locally synthesised answer, or null for "must not be reused".
+function dnsHeaders(cors, body, extra) {
+  const ttl = body === null || typeof body === 'number' ? body : minResponseTtl(body);
+  const headers = { ...cors, ...extra, 'Content-Type': 'application/dns-message' };
+  headers['Cache-Control'] = ttl === null ? 'no-store' : `max-age=${Math.min(ttl, MAX_RESPONSE_TTL)}`;
+  return headers;
+}
+
+// Suffix ("wildcard") match, most-specific-wins.
+//
+// The sources feeding rules/blocklists.txt are wildcard lists: hagezi publishes
+// wildcard/<list>-onlydomains.txt with the subdomains stripped, because the
+// consumer is expected to block the domain *and everything under it*. Only ~1.5%
+// of the merged list are subdomains of another entry, so exact matching let most
+// real ad hostnames through — `doubleclick.net` was listed but a lookup for
+// `googleads.g.doubleclick.net` resolved normally.
+//
+// Walking from the full name up to the apex and stopping at the first hit keeps
+// allowlist precedence intact at every level: an allowlisted `foo.example.com`
+// stays reachable even when `example.com` is blocked, and a blocked
+// `ads.example.com` stays blocked even when `example.com` is allowlisted.
+function isDomainBlocked(domain) {
+  if (!domain || adBlocklist.size === 0) return false;
+
+  let candidate = domain;
+  while (true) {
+    if (adAllowlist.has(candidate)) return false;
+    if (adBlocklist.has(candidate)) return true;
+    const dot = candidate.indexOf('.');
+    if (dot === -1) return false;
+    candidate = candidate.substring(dot + 1);
+  }
+}
+
+// Check if domain matches private TLD list (suffix match)
+function isDomainPrivate(domain) {
+  if (!domain || privateTlds.size === 0) return false;
+
+  // Exact match (e.g. query for "localhost" or "192.168.1.1")
+  if (privateTlds.has(domain)) return true;
+
+  // Suffix match: efficient with substring + indexOf
+  let pos = 0;
+  while ((pos = domain.indexOf('.', pos)) !== -1) {
+    if (privateTlds.has(domain.substring(pos + 1))) return true;
+    pos++; // Move past the dot
+  }
+
+  return false;
+}
+
+// Check if domain matches Mullvad upstream list (suffix match including subdomains)
+function isMullvadDomain(domain) {
+  if (!domain || mullvadUpstreamDomains.size === 0) return false;
+  if (mullvadUpstreamDomains.has(domain)) return true;
+  let pos = 0;
+  while ((pos = domain.indexOf('.', pos)) !== -1) {
+    if (mullvadUpstreamDomains.has(domain.substring(pos + 1))) return true;
+    pos++;
+  }
+  return false;
+}
+
+// Answer-less reply that echoes the question back with the given RCODE.
+// Mirrors the query's ID and Opcode/AA/TC/RD flags per RFC 1035 §4.1.1, so a
+// resolver can match it to the outstanding query. A query too short or too
+// truncated to carry a readable question gets a bare header SERVFAIL — the
+// only honest answer when we could not parse what was asked.
+function buildEmptyResponse(query, rcode) {
+  const v = new Uint8Array(query);
+  const qEnd = v.length >= 12 ? skipQuestions(v, 1) : -1;
+  if (qEnd < 0) {
+    const sf = new Uint8Array(12);
+    sf.set(v.subarray(0, Math.min(v.length, 2))); // keep the query ID if we have one
+    sf[2] = 0x84; sf[3] = 0x82; // QR=1, AA=1, RA=1, RCODE=2 (SERVFAIL)
+    return sf.buffer;           // QDCOUNT=0 — no question we could echo back
+  }
+  const res = new Uint8Array(qEnd);
+  res.set(v.subarray(0, qEnd));
+  res[2] = 0x80 | (v[2] & 0x7F); // QR=1, mirror Opcode/AA/TC/RD from query
+  res[3] = 0x80 | (rcode & 0x0F); // RA=1
+  res[4] = 0; res[5] = 1;   // QDCOUNT=1
+  res[6] = 0; res[7] = 0;   // ANCOUNT=0
+  res[8] = 0; res[9] = 0;   // NSCOUNT=0
+  res[10] = 0; res[11] = 0; // ARCOUNT=0
+  return res.buffer;
+}
+
+// NXDOMAIN: the domain does not exist. Used for blocked and private-TLD names.
+const buildNxdomain = (query) => buildEmptyResponse(query, 3);
+// NODATA: NOERROR with ANCOUNT=0 — the name exists, but not for this QTYPE.
+const buildNodata = (query) => buildEmptyResponse(query, 0);
+// SERVFAIL: we could not get an answer from any upstream.
+const buildServfail = (query) => buildEmptyResponse(query, 2);
+
+// ==================== ECS INJECTION ====================
+// Inject EDNS Client Subnet (ECS) into DNS query per RFC 7871
+// Adds client subnet info for geo-optimized CDN responses
+function injectECS(query, clientIP) {
+  if (!ECS_INJECTION_ENABLED || !clientIP || clientIP === 'unknown') return query;
+  try {
+    const v = new Uint8Array(query);
+    if (v.length < 12) return query;
+
+    // Strip existing OPT records. A null result means the message could not be
+    // parsed far enough to find them — appending our own OPT on top of one we
+    // failed to remove would produce two OPT records, which is a FORMERR.
+    const clean = stripOPT(v);
+    if (!clean) return query;
+
+    // Handle IPv4-mapped IPv6 addresses (::ffff:x.x.x.x)
+    const ipv4Mapped = clientIP.match(IPV4_MAPPED_REGEX);
+    if (ipv4Mapped) clientIP = ipv4Mapped[1];
+
+    // Build ECS data
+    let family, prefixLen, addrBytes;
+    if (clientIP.includes(':')) {
+      family = 2; prefixLen = ECS_PREFIX_V6;
+      const allBytes = ipv6ToBytes(clientIP);
+      if (!allBytes) return query; // Invalid IPv6 address, skip ECS injection
+      const byteLen = Math.ceil(prefixLen / 8);
+      addrBytes = allBytes.slice(0, byteLen);
+    } else {
+      family = 1; prefixLen = ECS_PREFIX_V4;
+      const parts = clientIP.split('.');
+      if (parts.length !== 4) return query;
+      // Validate every octet, not just the ones we keep: a malformed tail
+      // means the header is not an address at all, and Number('') is 0, so
+      // unchecked input would silently ship a bogus subnet to the upstream.
+      const octets = [];
+      for (const part of parts) {
+        if (!/^\d{1,3}$/.test(part)) return query;
+        const n = Number(part);
+        if (n > 255) return query;
+        octets.push(n);
+      }
+      const byteLen = Math.ceil(prefixLen / 8);
+      addrBytes = octets.slice(0, byteLen);
+    }
+
+    // Mask unused trailing bits per RFC 7871 (e.g., /24 prefix → mask last byte)
+    if (addrBytes.length > 0 && prefixLen % 8 !== 0) {
+      const maskBits = prefixLen % 8;
+      const mask = (0xFF << (8 - maskBits)) & 0xFF;
+      addrBytes[addrBytes.length - 1] &= mask;
+    }
+
+    const ecsLen = 4 + addrBytes.length;
+    const ecs = new Uint8Array(4 + ecsLen);
+    ecs[0] = 0; ecs[1] = 8; // option code 8 (ECS)
+    ecs[2] = (ecsLen >> 8) & 0xFF; ecs[3] = ecsLen & 0xFF;
+    ecs[4] = (family >> 8) & 0xFF; ecs[5] = family & 0xFF;
+    ecs[6] = prefixLen; ecs[7] = 0; // scope = 0
+    for (let i = 0; i < addrBytes.length; i++) ecs[8 + i] = addrBytes[i];
+
+    // OPT record
+    const opt = new Uint8Array(11 + ecs.length);
+    opt[0] = 0; // root
+    opt[1] = 0; opt[2] = 41; // type OPT
+    opt[3] = 16; opt[4] = 0; // UDP 4096
+    opt[5] = 0; opt[6] = 0; opt[7] = 0; opt[8] = 0; // ext RCODE
+    opt[9] = (ecs.length >> 8) & 0xFF; opt[10] = ecs.length & 0xFF;
+    opt.set(ecs, 11);
+
+    // Increment ARCOUNT to account for new OPT record
+    const currentArCount = (clean[10] << 8) | clean[11];
+    const newArCount = currentArCount + 1;
+
+    const result = new Uint8Array(clean.length + opt.length);
+    result.set(clean);
+    result.set(opt, clean.length);
+    result[10] = (newArCount >> 8) & 0xFF;
+    result[11] = newArCount & 0xFF;
+    return result.buffer;
+  } catch { return query; }
+}
+
+// Strip existing OPT (EDNS) records from a DNS query.
+// Validates rdata bounds and correctly rebuilds ARCOUNT.
+// Returns null when the message is too truncated to locate the AR section, so
+// the caller can leave the query alone instead of rebuilding it from garbage.
+function stripOPT(view) {
+  const qd = (view[4] << 8) | view[5];
+  let off = skipQuestions(view, qd);
+  if (off < 0) return null; // truncated question section
+  const an = (view[6] << 8) | view[7];
+  const ns = (view[8] << 8) | view[9];
+  for (let i = 0; i < an + ns; i++) {
+    off = skipName(view, off);
+    if (off < 0 || off + 10 > view.length) return null;
+    const rdlen = (view[off + 8] << 8) | view[off + 9];
+    off += 10 + rdlen;
+    if (off > view.length) return null; // rdata overruns the buffer
+  }
+  // Parse AR section: iterate each record, keep non-OPT, drop TYPE=41
+  const ar = (view[10] << 8) | view[11];
+  let arOff = off;
+  const keptRecords = [];
+  for (let i = 0; i < ar && arOff < view.length; i++) {
+    const recStart = arOff;
+    arOff = skipName(view, arOff);
+    if (arOff < 0 || arOff + 10 > view.length) break;
+    const type = (view[arOff] << 8) | view[arOff + 1];
+    const rdlen = (view[arOff + 8] << 8) | view[arOff + 9];
+    // Validate rdata length fits within buffer bounds
+    if (arOff + 10 + rdlen > view.length) break;
+    arOff += 10 + rdlen;
+    if (type !== 41) {
+      keptRecords.push(view.subarray(recStart, arOff));
+    }
+  }
+  // Rebuild buffer without OPT records
+  let totalLen = off;
+  for (const rec of keptRecords) totalLen += rec.length;
+  const r = new Uint8Array(totalLen);
+  r.set(view.subarray(0, off));
+  let writeOff = off;
+  for (const rec of keptRecords) {
+    r.set(rec, writeOff);
+    writeOff += rec.length;
+  }
+  // Set ARCOUNT to number of kept additional records (excluding removed OPT)
+  r[10] = (keptRecords.length >> 8) & 0xFF;
+  r[11] = keptRecords.length & 0xFF;
+  return r;
+}
+
+// Convert IPv6 address string to 16-byte array
+// Validates format, handles :: compression, rejects invalid input
+function ipv6ToBytes(ip) {
+  try {
+    if (!ip || typeof ip !== 'string') return null;
+    if (!IPV6_VALID_REGEX.test(ip)) return null;
+
+    const halves = ip.split('::');
+    if (halves.length > 2) return null; // Multiple :: is invalid
+
+    const left = halves[0] ? halves[0].split(':').filter(x => x) : [];
+    const right = halves.length > 1 && halves[1] ? halves[1].split(':').filter(x => x) : [];
+    const totalGroups = left.length + right.length;
+    if (totalGroups > 8) return null;
+
+    // Validate each group
+    for (const g of [...left, ...right]) {
+      if (g.length > 4 || !IPV6_GROUP_REGEX.test(g)) return null;
+    }
+
+    const missing = 8 - totalGroups;
+    const full = [...left, ...Array(missing).fill('0'), ...right];
+    const bytes = [];
+    for (const s of full) {
+      const v = parseInt(s || '0', 16);
+      if (isNaN(v)) return null;
+      bytes.push((v >> 8) & 0xFF, v & 0xFF);
+    }
+    return bytes;
+  } catch { return null; }
+}
+
+// ==================== DNS REDIRECT ====================
+function encodeDomainName(domain) {
+  if (!domain || domain === '.') return new Uint8Array([0]);
+  const parts = domain.replace(/\.$/, '').split('.');
+  let totalLen = 0;
+  for (const p of parts) totalLen += p.length + 1;
+  const buf = new Uint8Array(totalLen + 1);
+  let off = 0;
+  for (const p of parts) {
+    buf[off++] = p.length;
+    for (let i = 0; i < p.length; i++) buf[off++] = p.charCodeAt(i);
+  }
+  buf[off++] = 0;
+  return buf;
+}
+
+function decodeName(v, startOff) {
+  let labels = [];
+  let curr = startOff;
+  let jumped = false;
+  let nextOff = -1;
+  let depth = 0;
+  while (depth < 20 && curr < v.length) {
+    const b = v[curr];
+    if (b === 0) {
+      if (!jumped) nextOff = curr + 1;
+      curr++;
+      break;
+    }
+    if ((b & 0xC0) === 0xC0) {
+      if (curr + 1 >= v.length) break;
+      const ptr = ((b & 0x3F) << 8) | v[curr + 1];
+      if (!jumped) nextOff = curr + 2;
+      jumped = true;
+      curr = ptr;
+      depth++;
+    } else {
+      const l = v[curr++];
+      if (curr + l > v.length) break;
+      let label = "";
+      for (let i = 0; i < l; i++) label += String.fromCharCode(v[curr++]);
+      labels.push(label);
+    }
+  }
+  return { name: labels.length === 0 ? "." : labels.join('.'), nextOff: jumped ? nextOff : curr };
+}
+
+function rewriteQname(query, targetDomain) {
+  const v = new Uint8Array(query);
+  if (v.length < 12) return query;
+  const qnameEnd = skipName(v, 12);
+  if (qnameEnd < 0) return query;
+  const targetWire = encodeDomainName(targetDomain);
+  const afterQname = v.subarray(qnameEnd);
+  const result = new Uint8Array(12 + targetWire.length + afterQname.length);
+  result.set(v.subarray(0, 12));
+  result.set(targetWire, 12);
+  result.set(afterQname, 12 + targetWire.length);
+  return result.buffer;
+}
+
+function buildRedirectResponse(originalQuery, upstreamResponse, targetDomain) {
+  const uv = new Uint8Array(upstreamResponse);
+  const qv = new Uint8Array(originalQuery);
+  if (uv.length < 12 || qv.length < 12) return upstreamResponse;
+
+  let uOff = 12;
+  const uQd = (uv[4] << 8) | uv[5];
+  for (let i = 0; i < uQd; i++) {
+    uOff = decodeName(uv, uOff).nextOff + 4;
+  }
+
+  const anCount = (uv[6] << 8) | uv[7];
+  const ansRecords = [];
+  for (let i = 0; i < anCount && uOff < uv.length; i++) {
+    const dn = decodeName(uv, uOff);
+    uOff = dn.nextOff;
+    if (uOff + 10 > uv.length) break;
+    const type = (uv[uOff] << 8) | uv[uOff + 1];
+    const cls = (uv[uOff + 2] << 8) | uv[uOff + 3];
+    const ttl = ((uv[uOff + 4] << 24) | (uv[uOff + 5] << 16) | (uv[uOff + 6] << 8) | uv[uOff + 7]) >>> 0;
+    const rdlen = (uv[uOff + 8] << 8) | uv[uOff + 9];
+    uOff += 10;
+    if (uOff + rdlen > uv.length) break;
+
+    let rdata = uv.slice(uOff, uOff + rdlen);
+    if (type === 5 || type === 2 || type === 12) { // CNAME, NS, PTR
+      rdata = encodeDomainName(decodeName(uv, uOff).name);
+    } else if (type === 15) { // MX
+      const pref = uv.slice(uOff, uOff + 2);
+      const name = encodeDomainName(decodeName(uv, uOff + 2).name);
+      const combined = new Uint8Array(2 + name.length);
+      combined.set(pref); combined.set(name, 2);
+      rdata = combined;
+    } else if (type === 33) { // SRV
+      const fixed = uv.slice(uOff, uOff + 6);
+      const name = encodeDomainName(decodeName(uv, uOff + 6).name);
+      const combined = new Uint8Array(6 + name.length);
+      combined.set(fixed); combined.set(name, 6);
+      rdata = combined;
+    }
+    ansRecords.push({ type, cls, ttl, rdata });
+    uOff += rdlen;
+  }
+
+  const oQEnd = decodeName(qv, 12).nextOff + 4;
+
+  const targetWire = encodeDomainName(targetDomain);
+  const cnameSize = 2 + 10 + targetWire.length;
+  let ansSize = 0;
+  for (const rec of ansRecords) ansSize += targetWire.length + 10 + rec.rdata.length;
+
+  const res = new Uint8Array(oQEnd + cnameSize + ansSize);
+  res.set(qv.subarray(0, oQEnd));
+  res[2] = 0x80 | (qv[2] & 0x7F);
+  res[3] = uv[3];
+  res[4] = 0; res[5] = 1;
+  const newAnCount = 1 + ansRecords.length;
+  res[6] = (newAnCount >> 8) & 0xFF;
+  res[7] = newAnCount & 0xFF;
+  res[8] = 0; res[9] = 0;
+  res[10] = 0; res[11] = 0;
+
+  let off = oQEnd;
+  res[off++] = 0xC0; res[off++] = 0x0C; // Pointer to original query name
+  res[off++] = 0x00; res[off++] = 0x05; // TYPE CNAME
+  res[off++] = 0x00; res[off++] = 0x01; // CLASS IN
+  res[off++] = 0x00; res[off++] = 0x00;
+  res[off++] = 0x01; res[off++] = 0x2C; // TTL 300
+  res[off++] = (targetWire.length >> 8) & 0xFF;
+  res[off++] = targetWire.length & 0xFF;
+  res.set(targetWire, off); off += targetWire.length;
+
+  for (const rec of ansRecords) {
+    res.set(targetWire, off); off += targetWire.length;
+    res[off++] = (rec.type >> 8) & 0xFF; res[off++] = rec.type & 0xFF;
+    res[off++] = (rec.cls >> 8) & 0xFF; res[off++] = rec.cls & 0xFF;
+    res[off++] = (rec.ttl >> 24) & 0xFF; res[off++] = (rec.ttl >> 16) & 0xFF;
+    res[off++] = (rec.ttl >> 8) & 0xFF; res[off++] = rec.ttl & 0xFF;
+    res[off++] = (rec.rdata.length >> 8) & 0xFF; res[off++] = rec.rdata.length & 0xFF;
+    res.set(rec.rdata, off); off += rec.rdata.length;
+  }
+  return res.buffer;
+}
+
+
+// ==================== DNS FORWARDING ====================
+async function forwardQuery(query, upstream) {
+  const res = await fetch(upstream, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/dns-message', 'Accept': 'application/dns-message' },
+    body: query,
+    signal: AbortSignal.timeout(UPSTREAM_TIMEOUT)
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return await res.arrayBuffer();
+}
+
+// Resolve DNS query with fallback and geo-bypass logic
+// Returns SERVFAIL on upstream errors, NXDOMAIN for geo-blocked domains
+async function resolveQuery(query, clientIP) {
+  const processed = injectECS(query, clientIP);
+  let result;
+  try {
+    result = await forwardQuery(processed, UPSTREAM_PRIMARY);
+  } catch {
+    try {
+      result = await forwardQuery(processed, UPSTREAM_FALLBACK);
+    } catch {
+      // Both primary and fallback upstream failed
+      return buildServfail(query);
+    }
+  }
+
+  // If response contains 127.0.0.1, re-resolve via geo-bypass upstream.
+  // Send the ORIGINAL query (no ECS): the injected subnet is what triggers
+  // the geo-lock, and it would needlessly expose the client subnet to Mullvad.
+  if (result && hasLoopbackInAnswer(result)) {
+    try {
+      const respMullvad = await forwardQuery(query, UPSTREAM_GEO_BYPASS);
+      if (!hasLoopbackInAnswer(respMullvad)) return respMullvad;
+      // Mullvad success nhưng vẫn có loopback → geo-block thực sự
+      return buildNxdomain(query);
+    } catch {
+      // Mullvad upstream failed (timeout or network error)
+      return buildServfail(query);
+    }
+  }
+
+  return result;
+}
+
+// ==================== HELPERS ====================
+// Ensure blocklists are loaded (await on first load, background refresh after)
+async function ensureBlocklistsLoaded(url, context) {
+  if (!blocklistsFetched) {
+    // First time: await to ensure lists are loaded
+    await refreshBlocklists(url);
+  } else if (context) {
+    // Already fetched: background refresh only
+    context.waitUntil(refreshBlocklists(url));
+  }
+}
+
+// ==================== HANDLERS ====================
+async function handleDNSQuery(request, context) {
+  const clientIP = request.headers.get('CF-Connecting-IP') || 'unknown';
+  // CORS is opt-in (env CORS_ORIGIN); native browser/OS DoH never needs it
+  const cors = CORS_ORIGIN
+    ? { 'Access-Control-Allow-Origin': CORS_ORIGIN, 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Accept' }
+    : {};
+
+  if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
+
+  let query;
+  if (request.method === 'POST') {
+    query = await request.arrayBuffer();
+  } else if (request.method === 'GET') {
+    const dns = new URL(request.url).searchParams.get('dns');
+    if (!dns) return new Response('Missing dns parameter', { status: 400, headers: cors });
+    try {
+      const b64 = dns.replace(/-/g, '+').replace(/_/g, '/');
+      const padded = b64 + '=='.slice(0, (4 - b64.length % 4) % 4);
+      query = Uint8Array.from(atob(padded), c => c.charCodeAt(0)).buffer;
+    } catch {
+      // atob throws on malformed base64 — answer 400 instead of crashing
+      return new Response('Invalid dns parameter', { status: 400, headers: cors });
+    }
+  } else {
+    return new Response('Method not allowed', { status: 405, headers: cors });
+  }
+
+  // Reject anything that is not a well-formed query before it costs an upstream
+  // request: a bare header is 12 bytes, QR=0 marks a query rather than a
+  // response, and a query with no question has nothing to resolve.
+  const head = new Uint8Array(query);
+  if (head.length < 12 || (head[2] & 0x80) !== 0 || ((head[4] << 8) | head[5]) === 0) {
+    return new Response('Malformed DNS query', { status: 400, headers: cors });
+  }
+
+  // Block unwanted query types early to save upstream requests
+  if (BLOCKED_QTYPES.size > 0) {
+    const qtype = extractQtype(query);
+    if (qtype !== null && BLOCKED_QTYPES.has(qtype)) {
+      return new Response(buildNodata(query), {
+        headers: dnsHeaders(cors, LOCAL_RESPONSE_TTL, { 'X-Blocked-Type': String(qtype) })
+      });
+    }
+  }
+
+  // Load data if any domain-based filter is enabled
+  if (AD_BLOCK_ENABLED || BLOCK_PRIVATE_TLD || DNS_REDIRECT_ENABLED || MULLVAD_UPSTREAM_ENABLED) {
+    await ensureBlocklistsLoaded(request.url, context);
+
+    // Parse domains once for both filters
+    const domains = extractAllDomains(query);
+    for (const domain of domains) {
+      if (!domain) continue;
+
+      // Mullvad Dedicated Upstream — send the original query without ECS:
+      // Mullvad strips ECS anyway, so injecting it only leaks the client subnet
+      if (MULLVAD_UPSTREAM_ENABLED && isMullvadDomain(domain)) {
+        try {
+          const data = await forwardQuery(query, UPSTREAM_GEO_BYPASS);
+          return new Response(data, {
+            headers: dnsHeaders(cors, data, { 'X-Upstream': 'Mullvad' })
+          });
+        } catch {
+          return new Response(buildServfail(query), {
+            headers: dnsHeaders(cors, null, { 'X-Upstream': 'Mullvad-Failed' })
+          });
+        }
+      }
+
+      // Private TLD check (NXDOMAIN)
+      if (BLOCK_PRIVATE_TLD && isDomainPrivate(domain)) {
+        return new Response(buildNxdomain(query), {
+          headers: dnsHeaders(cors, LOCAL_RESPONSE_TTL, { 'X-Blocked-Private': domain })
+        });
+      }
+
+      // Ad block check (NXDOMAIN)
+      if (AD_BLOCK_ENABLED && isDomainBlocked(domain)) {
+        return new Response(buildNxdomain(query), {
+          headers: dnsHeaders(cors, LOCAL_RESPONSE_TTL, { 'X-Blocked': domain })
+        });
+      }
+
+      // DNS redirect: rewrite QNAME, forward to upstream, rebuild response with CNAME + answers
+      if (DNS_REDIRECT_ENABLED && redirectRules.has(domain)) {
+        const targetDomain = redirectRules.get(domain);
+        try {
+          const rewritten = rewriteQname(query, targetDomain);
+          const upstreamData = await resolveQuery(rewritten, clientIP);
+          const redirected = buildRedirectResponse(query, upstreamData, targetDomain);
+          return new Response(redirected, {
+            headers: dnsHeaders(cors, redirected, { 'X-Redirected': `${domain} -> ${targetDomain}` })
+          });
+        } catch {
+          // Redirect failed, fall through to normal resolution
+        }
+      }
+    }
+  }
+
+  // Forward to upstream
+  try {
+    const data = await resolveQuery(query, clientIP);
+    return new Response(data, { headers: dnsHeaders(cors, data) });
+  } catch {
+    return new Response('Upstream error', { status: 502, headers: cors });
+  }
+}
+
+// ==================== ROUTING ====================
+async function handleRequest(request, context) {
+  applyEnvConfig(context.env);
+  const path = new URL(request.url).pathname;
+  const segments = path.split('/').filter(Boolean);
+  const route = segments[0] || '';
+
+  // When DOH_TOKEN is set, every route must be /<route>/<token>.
+  // Wrong or missing token → 404 (indistinguishable from unknown routes).
+  if (DOH_TOKEN) {
+    if (segments.length !== 2 || !tokenMatches(segments[1], DOH_TOKEN)) {
+      return new Response('Not Found', { status: 404 });
+    }
+  } else if (segments.length > 1) {
+    return new Response('Not Found', { status: 404 });
+  }
+
+  if (route === 'dns-query') return handleDNSQuery(request, context);
+
+  if (route === 'debug') {
+    if (!DEBUG_ENABLED) return new Response('Not Found', { status: 404 });
+    if (AD_BLOCK_ENABLED || BLOCK_PRIVATE_TLD || DNS_REDIRECT_ENABLED) {
+      await ensureBlocklistsLoaded(request.url, context);
+    }
+    return new Response(JSON.stringify({
+      upstreams: { primary: maskUpstream(UPSTREAM_PRIMARY), fallback: maskUpstream(UPSTREAM_FALLBACK), geoBypass: maskUpstream(UPSTREAM_GEO_BYPASS) },
+      adBlock: { enabled: AD_BLOCK_ENABLED, blocklist: adBlocklist.size, allowlist: adAllowlist.size, lastFetch: blocklistLastFetch ? new Date(blocklistLastFetch).toISOString() : 'never' },
+      ecs: { enabled: ECS_INJECTION_ENABLED, prefixV4: `/${ECS_PREFIX_V4}`, prefixV6: `/${ECS_PREFIX_V6}` },
+      blockedTypes: { ANY: BLOCK_ANY, AAAA: BLOCK_AAAA, PTR: BLOCK_PTR, HTTPS: BLOCK_HTTPS },
+      privateTld: { enabled: BLOCK_PRIVATE_TLD, entries: privateTlds.size },
+      dnsRedirect: { enabled: DNS_REDIRECT_ENABLED, rules: redirectRules.size },
+      mullvadUpstream: { enabled: MULLVAD_UPSTREAM_ENABLED, entries: mullvadUpstreamDomains.size }
+    }, null, 2), { headers: { 'Content-Type': 'application/json' } });
+  }
+
+  if (route === 'apple') {
+    const host = new URL(request.url).hostname;
+    const dohUrl = `https://${host}/dns-query${DOH_TOKEN ? `/${DOH_TOKEN}` : ''}`;
+    const profileId = `com.serverless-edge-dns-gateway.${host}`;
+    const uuidProfile = await hostUuid(host, 'profile');
+    const uuidPayload = await hostUuid(host, 'dns-payload');
+    const profile = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>PayloadContent</key>
+    <array>
+        <dict>
+            <key>DNSSettings</key>
+            <dict>
+                <key>DNSProtocol</key>
+                <string>HTTPS</string>
+                <key>ServerURL</key>
+                <string>${dohUrl}</string>
+            </dict>
+            <key>PayloadDescription</key>
+            <string>Configures device to use Serverless Edge DNS Gateway</string>
+            <key>PayloadDisplayName</key>
+            <string>Serverless Edge DNS Gateway</string>
+            <key>PayloadIdentifier</key>
+            <string>${profileId}.dnsSettings.managed</string>
+            <key>PayloadType</key>
+            <string>com.apple.dnsSettings.managed</string>
+            <key>PayloadUUID</key>
+            <string>${uuidPayload}</string>
+            <key>PayloadVersion</key>
+            <integer>1</integer>
+            <key>ProhibitDisablement</key>
+            <false/>
+        </dict>
+    </array>
+    <key>PayloadDescription</key>
+    <string>This profile enables encrypted DNS (DNS over HTTPS) on iOS, iPadOS, and macOS devices.</string>
+    <key>PayloadDisplayName</key>
+    <string>Serverless Edge DNS Gateway - ${host}</string>
+    <key>PayloadIdentifier</key>
+    <string>${profileId}</string>
+    <key>PayloadRemovalDisallowed</key>
+    <false/>
+    <key>PayloadType</key>
+    <string>Configuration</string>
+    <key>PayloadUUID</key>
+    <string>${uuidProfile}</string>
+    <key>PayloadVersion</key>
+    <integer>1</integer>
+</dict>
+</plist>`;
+    return new Response(profile, {
+      headers: {
+        'Content-Type': 'application/x-apple-aspen-config',
+        'Content-Disposition': `attachment; filename="${host}.mobileconfig"`
+      }
+    });
+  }
+
+  // Unknown route — return 404 (landing page served as static index.html)
+  return new Response('Not Found', { status: 404 });
+}
+
+export default {
+  async fetch(request, env, ctx) {
+    return handleRequest(request, {
+      request,
+      env,
+      waitUntil: ctx.waitUntil.bind(ctx)
+    });
+  }
+}
+
+// Internal helpers exposed for the test suite in test/. Cloudflare Pages only
+// looks at the onRequest* exports, so this is inert at runtime.
+export const __internals = {
+  skipName,
+  skipQuestions,
+  extractQtype,
+  extractAllDomains,
+  hasLoopbackInAnswer,
+  minResponseTtl,
+  dnsHeaders,
+  buildEmptyResponse,
+  buildNxdomain,
+  buildNodata,
+  buildServfail,
+  isDomainBlocked,
+  isDomainPrivate,
+  isMullvadDomain,
+  injectECS,
+  stripOPT,
+  ipv6ToBytes,
+  encodeDomainName,
+  decodeName,
+  rewriteQname,
+  buildRedirectResponse,
+  forEachListLine,
+  maskUpstream,
+  tokenMatches,
+  LOCAL_RESPONSE_TTL,
+  MAX_RESPONSE_TTL,
+  // Test-only accessors for the module-level filter state
+  __setState({ block, allow, priv, redirect, mullvad }) {
+    if (block) adBlocklist = block;
+    if (allow) adAllowlist = allow;
+    if (priv) privateTlds = priv;
+    if (redirect) redirectRules = redirect;
+    if (mullvad) mullvadUpstreamDomains = mullvad;
+  },
+  __resetState() {
+    adBlocklist = new Set();
+    adAllowlist = new Set();
+    privateTlds = new Set();
+    redirectRules = new Map();
+    mullvadUpstreamDomains = new Set();
+  }
+};
