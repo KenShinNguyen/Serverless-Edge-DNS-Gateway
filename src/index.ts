@@ -435,7 +435,7 @@ function minResponseTtl(buf) {
 // reuse an answer.
 // `body` is either a response buffer to read TTLs out of, an explicit TTL in
 // seconds for a locally synthesised answer, or null for "must not be reused".
-function dnsHeaders(cors, body, extra) {
+function dnsHeaders(cors, body, extra = {}) {
   const ttl = body === null || typeof body === 'number' ? body : minResponseTtl(body);
   const headers = { ...cors, ...extra, 'Content-Type': 'application/dns-message' };
   headers['Cache-Control'] = ttl === null ? 'no-store' : `public, max-age=${Math.min(ttl, MAX_RESPONSE_TTL)}`;
@@ -905,7 +905,7 @@ async function ensureBlocklistsLoaded(url, context) {
 async function handleDNSQuery(request, context) {
   const clientIP = request.headers.get('CF-Connecting-IP') || 'unknown';
   // CORS is opt-in (env CORS_ORIGIN); native browser/OS DoH never needs it
-  const cors = CORS_ORIGIN
+  const cors: Record<string, string> = CORS_ORIGIN
     ? { 'Access-Control-Allow-Origin': CORS_ORIGIN, 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Accept' }
     : {};
 
