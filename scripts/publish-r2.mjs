@@ -9,6 +9,7 @@ import {
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const DEFAULT_BUCKET = "dns-compiled-rules";
 const LATEST_KEY = "compiled/latest.json";
@@ -290,7 +291,9 @@ async function main() {
   }, null, 2));
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.stack : error);
-  process.exit(1);
-});
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.stack : error);
+    process.exit(1);
+  });
+}
