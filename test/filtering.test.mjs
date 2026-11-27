@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { __internals as w } from '../functions/[[path]].js';
+import { __internals as w } from '../src/index.ts';
 
 function withLists({ block = [], allow = [], priv = [], mullvad = [] }, fn) {
   w.__resetState();
@@ -51,12 +51,14 @@ test('isDomainPrivate matches bare TLDs and reverse-DNS zones', () => {
   });
 });
 
-test('isMullvadDomain matches an entry and everything beneath it', () => {
-  withLists({ mullvad: ['github.com'] }, () => {
-    assert.equal(w.isMullvadDomain('github.com'), true);
-    assert.equal(w.isMullvadDomain('api.github.com'), true);
-    assert.equal(w.isMullvadDomain('nongithub.com'), false);
-  });
+test('isGeoBypassDomain matches an entry and everything beneath it', () => {
+  w.__resetState();
+  w.__setState({ geoBypass: new Set(['x.com']) });
+  try {
+    assert.equal(w.isGeoBypassDomain('x.com'), true);
+    assert.equal(w.isGeoBypassDomain('api.x.com'), true);
+    assert.equal(w.isGeoBypassDomain('notx.com'), false);
+  } finally { w.__resetState(); }
 });
 
 test('forEachListLine keeps domains and drops comments and blank lines', () => {
