@@ -6,7 +6,7 @@ import { query, response, record, counts, rcodeOf } from './helpers.mjs';
 // been fetched" flag both live in module scope and are applied exactly once.
 let instance = 0;
 async function loadWorker() {
-  return import(`../functions/[[path]].js?case=${instance++}`);
+  return (await import(`../src/index.ts?case=${instance++}`)).default;
 }
 
 const RULES = {
@@ -40,7 +40,7 @@ async function call(worker, path, { method = 'POST', body, env = {} } = {}) {
     body,
     headers: { 'CF-Connecting-IP': '203.0.113.9' }
   });
-  return worker.onRequest({ request, ...ctx(env) });
+  return worker.fetch(request, env, { waitUntil() {} });
 }
 
 const okUpstream = (buf) => async () => new Response(buf, { status: 200 });
@@ -94,14 +94,14 @@ test('a private TLD is refused locally', async () => {
 
 test('a Mullvad-listed domain goes to the geo-bypass upstream without ECS', async () => {
   const worker = await loadWorker();
-  const original = query({ questions: [{ name: 'api.github.com', type: 1 }] });
+  const original = query({ questions: [{ name: 'api.x.com', type: 1 }] });
   const calls = stubFetch(okUpstream(response({ answers: [record({ ttl: 300, rdata: [93, 184, 216, 34] })] })));
 
   const res = await call(worker, '/dns-query', { body: original });
 
-  assert.equal(res.headers.get('x-upstream'), 'Mullvad');
+  assert.equal(res.headers.get('x-upstream'), 'Quad9-NonECS');
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].url, 'https://dns.nextdns.io/7693ac');
+  assert.equal(calls[0].url, 'https://dns10.quad9.net/dns-query');
   assert.deepEqual(
     Array.from(new Uint8Array(calls[0].body)),
     Array.from(new Uint8Array(original)),
@@ -124,7 +124,7 @@ test('a failing primary upstream falls over to the secondary', async () => {
   const res = await call(worker, '/dns-query', { body: query() });
 
   assert.equal(res.status, 200);
-  assert.deepEqual(seen, ['cloudflare-dns.com', 'dns.nextdns.io']);
+  assert.deepEqual(seen, ['cloudflare-dns.com', 'dns.quad9.net']);
   assert.equal(res.headers.get('cache-control'), 'max-age=30');
 });
 
@@ -152,9 +152,9 @@ test('a loopback answer is re-resolved through the geo-bypass upstream', async (
     return new Response(hosts.length === 1 ? blocked : real, { status: 200 });
   };
 
-  const res = await call(worker, '/dns-query', { body: query() });
+  const res = await call(worker, '/dns-query', { body: query({ questions: [{ name: 'x.com', type: 1 }] }) });
 
-  assert.deepEqual(hosts, ['cloudflare-dns.com', 'dns.nextdns.io']);
+  assert.deepEqual(hosts, ['cloudflare-dns.com', 'dns10.quad9.net']);
   assert.equal(res.headers.get('cache-control'), 'max-age=45');
 });
 
@@ -226,7 +226,9 @@ test('/debug is off unless DEBUG_ENABLED is set, and never prints an upstream in
   assert.equal(body.upstreams.primary, 'https://abc***.cloudflare-gateway.com/dns-query');
   assert.equal(body.adBlock.blocklist, 2);
   assert.equal(body.adBlock.allowlist, 1);
-  assert.equal(body.dnsRedirect.rules, 1);
+  assert.equal(body.privateTld.entries, 3);
+  assert.equal(body.dnsRedirect.rules, 15);
+  assert.equal(body.geoBypass.entries, 1);
 });
 
 test('/apple serves a mobileconfig whose UUIDs are stable for a host', async () => {
@@ -281,11 +283,11 @@ test('an unreachable blocklist leaves the previously loaded list in place', asyn
     if (url.pathname in RULES) return new Response('gone', { status: 500 });
     return new Response(answer, { status: 200 });
   };
-  await worker.onRequest({
-    request: new Request('https://dns.example.workers.dev/dns-query', { method: 'OPTIONS' }),
-    env: {},
-    waitUntil(p) { refresh = p; }
-  });
+  await worker.fetch(
+    new Request('https://dns.example.workers.dev/dns-query', { method: 'OPTIONS' }),
+    {},
+    { waitUntil(p) { refresh = p; } }
+  );
 
   const again = await call(worker, '/dns-query', { body: query({ questions: [{ name: 'ads.example', type: 1 }] }) });
   await refresh;
