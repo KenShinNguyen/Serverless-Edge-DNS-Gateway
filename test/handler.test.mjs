@@ -54,7 +54,7 @@ test('a normal query is forwarded and answered with a TTL-derived max-age', asyn
 
   assert.equal(res.status, 200);
   assert.equal(res.headers.get('content-type'), 'application/dns-message');
-  assert.equal(res.headers.get('cache-control'), 'max-age=90');
+  assert.equal(res.headers.get('cache-control'), 'public, max-age=90');
   assert.equal(calls.length, 1, 'exactly one upstream request');
 });
 
@@ -68,7 +68,7 @@ test('a blocked domain is answered locally with NXDOMAIN and never reaches an up
   assert.equal(res.headers.get('x-blocked'), 'ads.example');
   assert.equal(rcodeOf(body), 3, 'NXDOMAIN');
   assert.deepEqual(counts(body), { qd: 1, an: 0, ns: 0, ar: 0 });
-  assert.equal(res.headers.get('cache-control'), 'max-age=300');
+  assert.equal(res.headers.get('cache-control'), 'public, max-age=300');
   assert.equal(calls.length, 0);
 });
 
@@ -125,7 +125,7 @@ test('a failing primary upstream falls over to the secondary', async () => {
 
   assert.equal(res.status, 200);
   assert.deepEqual(seen, ['cloudflare-dns.com', 'dns.quad9.net']);
-  assert.equal(res.headers.get('cache-control'), 'max-age=30');
+  assert.equal(res.headers.get('cache-control'), 'public, max-age=30');
 });
 
 test('both upstreams failing yields SERVFAIL that clients are told not to cache', async () => {
@@ -152,10 +152,10 @@ test('a loopback answer is re-resolved through the geo-bypass upstream', async (
     return new Response(hosts.length === 1 ? blocked : real, { status: 200 });
   };
 
-  const res = await call(worker, '/dns-query', { body: query({ questions: [{ name: 'x.com', type: 1 }] }) });
+  const res = await call(worker, '/dns-query', { body: query({ questions: [{ name: 'example.com', type: 1 }] }), env: { GEO_BYPASS_MODE: 'legacy-loopback' } });
 
   assert.deepEqual(hosts, ['cloudflare-dns.com', 'dns10.quad9.net']);
-  assert.equal(res.headers.get('cache-control'), 'max-age=45');
+  assert.equal(res.headers.get('cache-control'), 'public, max-age=45');
 });
 
 test('malformed and non-query messages are rejected before any upstream call', async () => {
