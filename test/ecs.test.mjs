@@ -63,7 +63,7 @@ test('injectECS unwraps an IPv4-mapped IPv6 client address', () => {
 
 test('injectECS replaces an OPT record the client already sent', () => {
   const q = query({ questions: [{ name: 'akamai.net', type: 1 }], additional: [opt({ rdata: [] })] });
-  const out = w.injectECS(q, '203.0.113.45');
+  const out = w.injectECS(q, '203.0.113.45', 'akamai.net');
   assert.equal(arCount(out), 1, 'exactly one OPT, not two');
   assert.deepEqual(readEcs(out).addr, [203, 0, 113]);
 });
