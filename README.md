@@ -102,7 +102,7 @@ Detailed rules:
 This project pairs naturally with [cloudflare-gateway-pihole-scripts (CGPS)](../../../cloudflare-gateway-pihole-scripts) in a **two-layer filtering architecture**, since the upstream (`UPSTREAM_PRIMARY`) is already a Cloudflare Gateway DoH endpoint:
 
 ```
-Device ──DoH──▶ Pages Function (Layer 1: ads/tracking ~1M domains, ECS, redirects)
+Device ──DoH──▶ Cloudflare Worker (Layer 1: ads/tracking ~1M domains, ECS, redirects)
                       │
                       ▼
             Cloudflare Gateway (Layer 2: CGPS-managed malware/phishing lists
