@@ -30,11 +30,10 @@ Dịch vụ DNS-over-HTTPS (DoH) bảo mật, hiệu năng cao, chạy trên h�
 2. Truy cập tab **Actions** trong repository bạn vừa fork và nhấn **I understand my workflows, go ahead and enable them**.
 3. Chọn và **Enable** thủ công 2 workflows: `Update DNS Blocklists` và `Delete Old Workflow Runs`. (`Update Filter Lists` là workflow Lớp 2 / CGPS tuỳ chọn — cứ để tắt nếu bạn chưa tạo các secrets mô tả ở [phần dưới](#-lớp-2-lọc-bảo-mật-bằng-cloudflare-gateway-cgps).)
 
-### 2. Triển khai lên Cloudflare Pages
-1. Vào [Workers & Pages > Create application > Connect to Git](https://dash.cloudflare.com/?to=/:account/pages/new/provider/github).
-2. Chọn repository bạn vừa Fork.
-3. **Build Settings**: Để **mặc định hoàn toàn** (không cần điền hay chỉnh sửa gì).
-4. Nhấn **Save and Deploy**.
+### 2. Triển khai lên Cloudflare Workers
+1. Kết nối repository với Cloudflare Workers bằng luồng build/deploy của Workers.
+2. Cấu hình các biến và secret của Worker theo phần bên dưới.
+3. Deploy bằng Wrangler hoặc pipeline Workers đã cấu hình.
 
 ---
 
@@ -99,7 +98,7 @@ Các quy tắc chi tiết:
 Project này kết hợp tự nhiên với [cloudflare-gateway-pihole-scripts (CGPS)](../../../cloudflare-gateway-pihole-scripts) theo kiến trúc **lọc 2 lớp**, vì upstream (`UPSTREAM_PRIMARY`) vốn đã là endpoint DoH của Cloudflare Gateway:
 
 ```
-Thiết bị ──DoH──▶ Pages Function (Lớp 1: quảng cáo/tracking ~1M domain, ECS, redirect)
+Thiết bị ──DoH──▶ Cloudflare Worker (Lớp 1: quảng cáo/tracking ~1M domain, ECS, redirect)
                         │
                         ▼
               Cloudflare Gateway (Lớp 2: list malware/phishing do CGPS quản lý
