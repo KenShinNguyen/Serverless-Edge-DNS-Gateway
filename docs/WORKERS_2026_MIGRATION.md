@@ -1,5 +1,7 @@
 # Workers 2026 migration
 
+> **Status: COMPLETE.** The Worker runtime is now the active architecture; legacy Pages runtime artifacts are removed in Wave 2C. Production deployment remains frozen during this cleanup.
+
 This branch migrates the runtime from Cloudflare Pages Functions to a Cloudflare Workers module with Static Assets.
 
 ## What changed
@@ -73,4 +75,4 @@ Before production cutover:
 2. Set `UPSTREAM_PRIMARY`, `UPSTREAM_FALLBACK`, `UPSTREAM_GEO_BYPASS` and `DOH_TOKEN` as secrets/variables.
 3. Set `ECS_MODE=selective` and populate `ECS_ALLOWLIST` only with domains that genuinely need client-subnet based CDN steering.
 4. Verify `/dns-query/<token>`, Apple profile generation and normal web browsing.
-5. Keep the Pages deployment available until the Worker passes the production test matrix.
+5. Keep the production Worker baseline frozen while completing post-migration cleanup and parity verification.
