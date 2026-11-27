@@ -103,24 +103,34 @@ const REVALIDATE_MS = 5 * 60 * 1000;
 const ERROR_COOLDOWN_MS = 60 * 1000;
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 
+export interface RuleSnapshotHealth {
+  status: "uninitialized" | "ready" | "stale" | "degraded";
+  sha256: string | null;
+  ruleCount: number;
+  source: "r2" | "embedded-fallback";
+  active: boolean;
+  error: string | null;
+}
+
 export class RuleSnapshotManager {
   private active: SnapshotState | null = null;
   private nextCheckAt = 0;
   private inFlight: Promise<void> | null = null;
+  private lastError: string | null = null;
 
   public async evaluate(
     qname: string,
     bucket: R2Bucket | undefined,
     ctx: ExecutionContext
   ): Promise<RuleDecision> {
-    if (!bucket) return "PASS";
+    if (!bucket) {
+      if (!this.active) this.lastError = "R2 bucket binding unavailable";
+      return this.active ? this.active.table.evaluate(qname) : "PASS";
+    }
 
     const now = Date.now();
-
     if (!this.active) {
-      if (now >= this.nextCheckAt) {
-        await this.triggerReload(bucket);
-      }
+      if (now >= this.nextCheckAt) await this.triggerReload(bucket);
     } else if (now >= this.nextCheckAt && !this.inFlight) {
       ctx.waitUntil(this.triggerReload(bucket));
     }
@@ -136,9 +146,20 @@ export class RuleSnapshotManager {
     return this.active ? this.active.table.ruleCount : null;
   }
 
+  public getHealth(): RuleSnapshotHealth {
+    const active = this.active !== null;
+    return {
+      status: active ? (this.lastError ? "stale" : "ready") : (this.lastError ? "degraded" : "uninitialized"),
+      sha256: this.active?.sha256 ?? null,
+      ruleCount: this.active?.table.ruleCount ?? 0,
+      source: active ? "r2" : "embedded-fallback",
+      active,
+      error: this.lastError
+    };
+  }
+
   private triggerReload(bucket: R2Bucket): Promise<void> {
     if (this.inFlight) return this.inFlight;
-
     this.inFlight = this.reloadInternal(bucket).finally(() => {
       this.inFlight = null;
     });
@@ -149,6 +170,7 @@ export class RuleSnapshotManager {
     try {
       const manifestObj = await bucket.get("compiled/latest.json");
       if (!manifestObj) {
+        this.lastError = "R2 latest manifest missing";
         this.nextCheckAt = Date.now() + ERROR_COOLDOWN_MS;
         return;
       }
@@ -173,51 +195,49 @@ export class RuleSnapshotManager {
             `Rule count mismatch: manifest=${manifest.rules}, active=${this.active.table.ruleCount}`
           );
         }
+        this.lastError = null;
         this.nextCheckAt = Date.now() + REVALIDATE_MS;
         return;
       }
 
-      const buffer = await this.fetchImmutableBinary(bucket, manifest.key, manifest.sha256);
+      const buffer = await this.fetchImmutableBinary(bucket, manifest.key, manifest.sha256, manifest.rules);
       const validated = validateEdnsV1Buffer(buffer);
-      if (validated.count !== manifest.rules) {
-        throw new Error(
-          `Rule count mismatch: manifest=${manifest.rules}, binary=${validated.count}`
-        );
-      }
-
-      const digestInput = new Uint8Array(validated.bytes.byteLength);
-      digestInput.set(validated.bytes);
-      const digest = await crypto.subtle.digest("SHA-256", digestInput);
-      const actualHex = Array.from(new Uint8Array(digest))
-        .map((b) => b.toString(16).padStart(2, "0"))
-        .join("");
-
-      if (actualHex !== manifest.sha256) {
-        throw new Error("Rule binary SHA-256 mismatch");
-      }
-
       const nextTable = new ZeroCopyRuleTable(validated.bytes);
-      if (nextTable.ruleCount !== manifest.rules) {
-        throw new Error(
-          `Rule count mismatch after table construction: manifest=${manifest.rules}, table=${nextTable.ruleCount}`
-        );
-      }
-
       this.active = {
         version: manifest.version,
         sha256: manifest.sha256,
         table: nextTable,
       };
+      this.lastError = null;
       this.nextCheckAt = Date.now() + REVALIDATE_MS;
-    } catch {
+    } catch (error) {
+      this.lastError = error instanceof Error ? error.message.slice(0, 160) : "R2 snapshot load failed";
       this.nextCheckAt = Date.now() + ERROR_COOLDOWN_MS;
+    }
+  }
+
+  private async verifySnapshot(
+    buffer: ArrayBuffer,
+    sha256: string,
+    expectedRules: number
+  ): Promise<void> {
+    const digest = await crypto.subtle.digest("SHA-256", buffer);
+    const actualHex = Array.from(new Uint8Array(digest))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    if (actualHex !== sha256) throw new Error("Rule binary SHA-256 mismatch");
+
+    const validated = validateEdnsV1Buffer(buffer);
+    if (validated.count !== expectedRules) {
+      throw new Error(`Rule count mismatch: manifest=${expectedRules}, binary=${validated.count}`);
     }
   }
 
   private async fetchImmutableBinary(
     bucket: R2Bucket,
     key: string,
-    sha256: string
+    sha256: string,
+    expectedRules: number
   ): Promise<ArrayBuffer> {
     const cacheKey = new Request(`https://r2-rules.internal/compiled/rules-${sha256}.bin`);
     const cacheStorage =
@@ -228,13 +248,22 @@ export class RuleSnapshotManager {
 
     if (edgeCache) {
       const cached = await edgeCache.match(cacheKey);
-      if (cached) return cached.arrayBuffer();
+      if (cached) {
+        const cachedBuffer = await cached.arrayBuffer();
+        try {
+          await this.verifySnapshot(cachedBuffer, sha256, expectedRules);
+          return cachedBuffer;
+        } catch {
+          try { await edgeCache.delete(cacheKey); } catch { /* best-effort cache repair */ }
+        }
+      }
     }
 
     const object = await bucket.get(key);
     if (!object) throw new Error(`Missing R2 rule binary: ${key}`);
-
     const buffer = await object.arrayBuffer();
+    // Digest, format and count are verified BEFORE cache.put.
+    await this.verifySnapshot(buffer, sha256, expectedRules);
 
     if (edgeCache) {
       await edgeCache.put(
