@@ -179,11 +179,12 @@ export class RuleSnapshotManager {
       if (
         !manifest ||
         typeof manifest.version !== "string" ||
+        manifest.version.length === 0 ||
         typeof manifest.key !== "string" ||
         typeof manifest.sha256 !== "string" ||
         !SHA256_HEX_RE.test(manifest.sha256) ||
-        !/^compiled\/rules-[0-9a-f]{64}\.bin$/.test(manifest.key) ||
-        !Number.isInteger(manifest.rules) ||
+        manifest.key !== `compiled/rules-${manifest.sha256}.bin` ||
+        !Number.isSafeInteger(manifest.rules) ||
         (manifest.rules ?? -1) < 0
       ) {
         throw new Error("Invalid latest.json schema");
