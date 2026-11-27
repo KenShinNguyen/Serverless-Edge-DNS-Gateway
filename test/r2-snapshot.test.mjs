@@ -125,3 +125,54 @@ test("unchanged manifest does not reload the binary", async () => {
   assert.equal(await manager.evaluate("ads.example.com", bucket, ctx()), "BLOCK");
   assert.equal(bucket.gets.filter((key) => key === manifest.key).length, binaryGets);
 });
+
+
+test("manifest key must be canonical for its SHA before binary fetch", async () => {
+  const bucket = new MockR2();
+  const buffer = buildRules([["ads.example.com", "BLOCK"]]);
+  const manifest = manifestFor(buffer, "v1");
+  const wrongSha = "a".repeat(64);
+  bucket.objects.set("compiled/latest.json", JSON.stringify({
+    ...manifest,
+    key: `compiled/rules-${wrongSha}.bin`,
+  }));
+  bucket.objects.set(manifest.key, buffer);
+  bucket.objects.set(`compiled/rules-${wrongSha}.bin`, buffer);
+
+  const manager = new RuleSnapshotManager();
+  assert.equal(await manager.evaluate("ads.example.com", bucket, ctx()), "PASS");
+  assert.deepEqual(bucket.gets, ["compiled/latest.json"]);
+  assert.equal(manager.getHealth().status, "degraded");
+});
+
+test("manifest rejects an unsafe rule count before binary fetch", async () => {
+  const bucket = new MockR2();
+  const buffer = buildRules([["ads.example.com", "BLOCK"]]);
+  const manifest = manifestFor(buffer, "v1");
+  bucket.objects.set("compiled/latest.json", JSON.stringify({
+    ...manifest,
+    rules: Number.MAX_SAFE_INTEGER + 1,
+  }));
+  bucket.objects.set(manifest.key, buffer);
+
+  const manager = new RuleSnapshotManager();
+  assert.equal(await manager.evaluate("ads.example.com", bucket, ctx()), "PASS");
+  assert.deepEqual(bucket.gets, ["compiled/latest.json"]);
+  assert.equal(manager.getHealth().status, "degraded");
+});
+
+test("manifest rejects an empty version before binary fetch", async () => {
+  const bucket = new MockR2();
+  const buffer = buildRules([["ads.example.com", "BLOCK"]]);
+  const manifest = manifestFor(buffer, "v1");
+  bucket.objects.set("compiled/latest.json", JSON.stringify({
+    ...manifest,
+    version: "",
+  }));
+  bucket.objects.set(manifest.key, buffer);
+
+  const manager = new RuleSnapshotManager();
+  assert.equal(await manager.evaluate("ads.example.com", bucket, ctx()), "PASS");
+  assert.deepEqual(bucket.gets, ["compiled/latest.json"]);
+  assert.equal(manager.getHealth().status, "degraded");
+});
