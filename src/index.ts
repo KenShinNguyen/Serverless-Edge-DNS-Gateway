@@ -185,6 +185,18 @@ let adAllowlist = new Set();
 let privateTlds = new Set(PRIVATE_TLD_ENTRIES);
 let redirectRules = new Map(REDIRECT_RULE_ENTRIES); // domain → target domain
 let geoBypassDomains = new Set(GEO_BYPASS_DOMAINS);
+const fallbackBlocklist = new Set(FALLBACK_BLOCK_DOMAINS);
+
+function isFallbackDomainBlocked(domain) {
+  if (!domain) return false;
+  let candidate = domain.toLowerCase();
+  while (true) {
+    if (fallbackBlocklist.has(candidate)) return true;
+    const dot = candidate.indexOf('.');
+    if (dot === -1) return false;
+    candidate = candidate.slice(dot + 1);
+  }
+}
 let blocklistLastFetch = 0;
 let blocklistPromise = null;
 let blocklistsFetched = false; // Track if lists have been fetched at least once
@@ -411,9 +423,21 @@ function minResponseTtl(buf) {
 // reuse an answer.
 // `body` is either a response buffer to read TTLs out of, an explicit TTL in
 // seconds for a locally synthesised answer, or null for "must not be reused".
+function safeDiagnosticHeaders(extra = {}) {
+  const safe = {};
+  for (const [name, rawValue] of Object.entries(extra)) {
+    const value = String(rawValue);
+    // DNS labels are arbitrary wire bytes. Omit diagnostic headers when the
+    // domain contains controls or non-ASCII bytes rather than throwing 500.
+    if (value.length > 256 || !/^[\x20-\x7E]*$/.test(value)) continue;
+    safe[name] = value;
+  }
+  return safe;
+}
+
 function dnsHeaders(cors, body, extra = {}) {
   const ttl = body === null || typeof body === 'number' ? body : minResponseTtl(body);
-  const headers = { ...cors, ...extra, 'Content-Type': 'application/dns-message' };
+  const headers = { ...cors, ...safeDiagnosticHeaders(extra), 'Content-Type': 'application/dns-message' };
   headers['Cache-Control'] = ttl === null ? 'no-store' : `public, max-age=${Math.min(ttl, MAX_RESPONSE_TTL)}`;
   return headers;
 }
@@ -461,7 +485,7 @@ function isDomainPrivate(domain) {
   return false;
 }
 
-// Check if domain matches Mullvad upstream list (suffix match including subdomains)
+// Check if domain matches the bundled no-ECS geo-bypass list.
 function isGeoBypassDomain(domain) {
   if (!domain || geoBypassDomains.size === 0) return false;
   if (geoBypassDomains.has(domain)) return true;
@@ -928,18 +952,18 @@ async function handleDNSQuery(request, context) {
 
   let queryDomain = '';
 
-  // Load data if any domain-based filter is enabled
+  // Large text blocklists are fetched only when there is no R2 binding.
+  // Bundled private-TLD, redirect and geo-bypass rules run on every request.
   if (AD_BLOCK_ENABLED && !context.env?.RULES_BUCKET) {
     await ensureBlocklistsLoaded(request.url, context);
+  }
 
-    // Parse domains once for both filters
-    const domains = extractAllDomains(query);
-    for (const domain of domains) {
+  const domains = extractAllDomains(query);
+  for (const domain of domains) {
       if (!domain) continue;
       if (!queryDomain) queryDomain = domain;
 
-      // Mullvad Dedicated Upstream — send the original query without ECS:
-      // Mullvad strips ECS anyway, so injecting it only leaks the client subnet
+      // Dedicated no-ECS resolver — send the original query to avoid leaking ECS.
       if (GEO_BYPASS_ENABLED && isGeoBypassDomain(domain)) {
         const bypass = await forwardGeoBypass(query);
         return new Response(bypass.data, {
@@ -956,11 +980,18 @@ async function handleDNSQuery(request, context) {
 
       // Ad block check. Prefer the immutable R2 binary snapshot when configured;
       // retain the existing text-list path as a deliberate local/staging fallback.
-      const binaryDecision = AD_BLOCK_ENABLED && context.env?.RULES_BUCKET
-        ? await ruleSnapshotManager.evaluate(domain, context.env.RULES_BUCKET, context)
-        : (AD_BLOCK_ENABLED && isDomainBlocked(domain) ? 'BLOCK' : 'PASS');
+      const binaryDecision = AD_BLOCK_ENABLED
+        ? await ruleSnapshotManager.evaluate(domain, context.env?.RULES_BUCKET, context)
+        : 'PASS';
+      const snapshotHealth = ruleSnapshotManager.getHealth();
+      const fallbackDecision = AD_BLOCK_ENABLED && !snapshotHealth.active && isFallbackDomainBlocked(domain)
+        ? 'BLOCK'
+        : 'PASS';
+      const textDecision = AD_BLOCK_ENABLED && !context.env?.RULES_BUCKET && isDomainBlocked(domain)
+        ? 'BLOCK'
+        : 'PASS';
 
-      if (binaryDecision === 'BLOCK') {
+      if (binaryDecision === 'BLOCK' || fallbackDecision === 'BLOCK' || textDecision === 'BLOCK') {
         return new Response(buildNxdomain(query), {
           headers: dnsHeaders(cors, LOCAL_RESPONSE_TTL, { 'X-Blocked': domain })
         });
@@ -989,7 +1020,6 @@ async function handleDNSQuery(request, context) {
           // Redirect failed, fall through to normal resolution
         }
       }
-    }
   }
 
   // Forward to upstream
@@ -1022,10 +1052,13 @@ async function handleRequest(request, context) {
 
   if (route === 'debug') {
     if (!DEBUG_ENABLED) return new Response('Not Found', { status: 404 });
-    if (BLOCK_PRIVATE_TLD || DNS_REDIRECT_ENABLED || GEO_BYPASS_ENABLED ||
-        (AD_BLOCK_ENABLED && !context.env?.RULES_BUCKET)) {
+    if (AD_BLOCK_ENABLED && !context.env?.RULES_BUCKET) {
       await ensureBlocklistsLoaded(request.url, context);
     }
+    if (context.env?.RULES_BUCKET) {
+      await ruleSnapshotManager.evaluate('', context.env.RULES_BUCKET, context);
+    }
+    const snapshotHealth = ruleSnapshotManager.getHealth();
     return new Response(JSON.stringify({
       upstreams: {
         primary: maskUpstream(UPSTREAM_PRIMARY),
@@ -1045,7 +1078,16 @@ async function handleRequest(request, context) {
       blockedTypes: { ANY: BLOCK_ANY, AAAA: BLOCK_AAAA, PTR: BLOCK_PTR, HTTPS: BLOCK_HTTPS },
       privateTld: { enabled: BLOCK_PRIVATE_TLD, entries: privateTlds.size },
       dnsRedirect: { enabled: DNS_REDIRECT_ENABLED, rules: redirectRules.size },
-      geoBypass: { enabled: GEO_BYPASS_ENABLED, entries: geoBypassDomains.size, primary: maskUpstream(UPSTREAM_GEO_BYPASS), fallback: maskUpstream(UPSTREAM_GEO_BYPASS_FALLBACK) }
+      geoBypass: { enabled: GEO_BYPASS_ENABLED, entries: geoBypassDomains.size, primary: maskUpstream(UPSTREAM_GEO_BYPASS), fallback: maskUpstream(UPSTREAM_GEO_BYPASS_FALLBACK) },
+      r2Snapshot: {
+        status: snapshotHealth.status,
+        sha256: snapshotHealth.sha256,
+        ruleCount: snapshotHealth.ruleCount,
+        source: snapshotHealth.source,
+        active: snapshotHealth.active,
+        error: snapshotHealth.error,
+        fallbackRuleCount: FALLBACK_BLOCK_DOMAINS.length
+      }
     }, null, 2), { headers: { 'Content-Type': 'application/json' } });
   }
 
@@ -1142,6 +1184,7 @@ export const __internals = {
   isGeoBypassDomain,
   forwardGeoBypass,
   getBundledRuleCounts: () => ({ privateTld: privateTlds.size, redirect: redirectRules.size, geoBypass: geoBypassDomains.size }),
+  isFallbackDomainBlocked,
   injectECS,
   stripOPT,
   ipv6ToBytes,
@@ -1155,12 +1198,12 @@ export const __internals = {
   LOCAL_RESPONSE_TTL,
   MAX_RESPONSE_TTL,
   // Test-only accessors for the module-level filter state
-  __setState({ block, allow, priv, redirect, mullvad }) {
+  __setState({ block, allow, priv, redirect, geoBypass }) {
     if (block) adBlocklist = block;
     if (allow) adAllowlist = allow;
     if (priv) privateTlds = priv;
     if (redirect) redirectRules = redirect;
-    if (mullvad) geoBypassDomains = mullvad;
+    if (geoBypass) geoBypassDomains = geoBypass;
   },
   __resetState() {
     adBlocklist = new Set();
