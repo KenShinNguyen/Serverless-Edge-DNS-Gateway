@@ -62,7 +62,7 @@ test('injectECS unwraps an IPv4-mapped IPv6 client address', () => {
 });
 
 test('injectECS replaces an OPT record the client already sent', () => {
-  const q = query({ additional: [opt({ rdata: [] })] });
+  const q = query({ questions: [{ name: 'akamai.net', type: 1 }], additional: [opt({ rdata: [] })] });
   const out = w.injectECS(q, '203.0.113.45');
   assert.equal(arCount(out), 1, 'exactly one OPT, not two');
   assert.deepEqual(readEcs(out).addr, [203, 0, 113]);
@@ -98,7 +98,7 @@ test('stripOPT leaves a non-OPT additional record in place', () => {
   assert.ok(bytes(stripped.buffer).join(',').includes(tsig.join(',')), 'the TSIG-shaped record survives');
 });
 
-function inject(ip) { return w.injectECS(query(), ip); }
+function inject(ip) { return w.injectECS(query({ questions: [{ name: 'akamai.net', type: 1 }] }), ip); }
 
 /**
  * A message claiming an answer record whose rdata runs off the end. stripOPT
