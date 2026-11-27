@@ -1,13 +1,13 @@
 # 🛡️ Serverless Edge DNS Gateway
 [English](README.md) | [Tiếng Việt](README_VN.md)
 
-Dịch vụ DNS-over-HTTPS (DoH) bảo mật, hiệu năng cao, chạy trên hạ tầng Edge toàn cầu của Cloudflare Pages. Giải pháp tối ưu tốc độ truy cập, độ chính xác vị trí địa lý (ECS) và chặn quảng cáo chuyên nghiệp.
+Dịch vụ DNS-over-HTTPS (DoH) bảo mật, hiệu năng cao, chạy trên hạ tầng Edge toàn cầu của Cloudflare Workers. Giải pháp tối ưu tốc độ truy cập, độ chính xác vị trí địa lý (ECS) và chặn quảng cáo chuyên nghiệp.
 
 ---
 
 ## ⚡ Tính năng nổi bật
 
-*   **Mức độ sử dụng miễn phí**: chạy hoàn toàn trên gói Free của Cloudflare Pages với hạn mức 100,000 requests mỗi ngày. Với mức tiêu thụ trung bình 200 – 4000 requests/thiết bị/ngày, bạn có thể sử dụng khoảng 10-20 thiết bị trên cùng một tài khoản (thậm chí 100-200 thiết bị nếu dùng thông thường)
+*   **Mức độ sử dụng miễn phí**: chạy trên hạ tầng Cloudflare Workers với hạn mức 100,000 requests mỗi ngày. Với mức tiêu thụ trung bình 200 – 4000 requests/thiết bị/ngày, bạn có thể sử dụng khoảng 10-20 thiết bị trên cùng một tài khoản (thậm chí 100-200 thiết bị nếu dùng thông thường)
 *   **Hỗ trợ Custom Domain**: Dễ dàng gắn tên miền riêng để có địa chỉ DNS ngắn gọn, chuyên nghiệp. Bạn có thể sử dụng nhiều tài khoản Cloudflare khác nhau để nhân bản hạn mức (x100k/tài khoản) mà vẫn dùng được tên miền tùy chỉnh.
 *   **Chặn quảng cáo thông minh**: Tự động lọc quảng cáo tại Edge bằng các danh sách chuyên nghiệp (AdGuard, ABPVN, Bypass-VN...), được cập nhật tự động mỗi 3 giờ.
 *   **Tối ưu hóa vị trí địa lý (ECS - RFC 7871)**: Tự động chèn EDNS Client Subnet (IPv4 `/24`, IPv6 `/48`) để đảm bảo các CDN (như Akamai, CloudFront, Fastly, BunnyCDN, Gcore) điều hướng bạn đến máy chủ gần nhất.
@@ -40,7 +40,7 @@ Dịch vụ DNS-over-HTTPS (DoH) bảo mật, hiệu năng cao, chạy trên h�
 
 ## ⚙️ Cấu hình
 
-Các cài đặt theo từng deployment (upstream, token, CORS) được đọc từ **biến môi trường** — vào Cloudflare Pages > **Settings > Environment variables** để thiết lập, sau đó redeploy. Các công tắc tính năng (adblock, ECS, lọc loại truy vấn) vẫn nằm ở đầu file [functions/[[path]].js](functions/[[path]].js).
+Các cài đặt theo từng deployment (upstream, token, CORS) được đọc từ **biến môi trường** — vào Cloudflare Workers > **Settings > Variables and Secrets** để thiết lập, sau đó redeploy. Các công tắc tính năng (adblock, ECS, lọc loại truy vấn) được cấu hình trong `src/index.ts` và `wrangler.jsonc`.
 
 ### Biến môi trường
 
@@ -73,7 +73,7 @@ Các cài đặt theo từng deployment (upstream, token, CORS) được đọc 
 
 ## 🛠 Quản lý quy tắc (Rules)
 
-Các quy tắc nằm trong thư mục `rules/`. Khi bạn thực hiện thay đổi và commit lên GitHub, Cloudflare Pages sẽ tự động đồng bộ và áp dụng cấu hình mới ngay lập tức.
+Các quy tắc nằm trong thư mục `rules/`. Khi bạn thay đổi và commit các file này lên GitHub, pipeline triển khai Worker đã cấu hình có thể biên dịch và phát hành bộ rules mới.
 
 Các quy tắc chi tiết:
 
@@ -165,7 +165,7 @@ Thiết bị ──DoH──▶ Pages Function (Lớp 1: quảng cáo/tracking ~
 
 ## 🧪 Phát triển & kiểm thử
 
-Toàn bộ tầng DNS trong [functions/[[path]].js](functions/[[path]].js) là parser và serializer wire-format viết tay, nên repo có sẵn bộ test đi kèm. Không cần cài gì cả — dự án cố ý giữ thiết kế zero-build để Cloudflare Pages deploy thẳng từ thư mục gốc, và test runner có sẵn trong Node (từ Node 18) là đủ:
+Tầng DNS trong `src/index.ts` là parser và serializer wire-format viết tay, với bộ test chạy trực tiếp trên Worker runtime. Node 24 và các script trong `package.json` được dùng để kiểm tra cục bộ:
 
 ```bash
 node --test 'test/*.test.mjs'
