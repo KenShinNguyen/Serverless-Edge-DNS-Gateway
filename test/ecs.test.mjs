@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { __internals as w } from '../functions/[[path]].js';
+import { __internals as w } from '../src/index.ts';
 import { query, opt, encodeName, bytes } from './helpers.mjs';
 
 /** Pull the ECS option (code 8) out of the OPT record of a query, if present. */
