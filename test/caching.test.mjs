@@ -42,7 +42,7 @@ test('dnsHeaders derives max-age from the response TTL', () => {
 
 test('dnsHeaders caps max-age so a multi-day upstream TTL cannot pin a client', () => {
   const r = response({ answers: [record({ ttl: 86400 })] });
-  assert.equal(w.dnsHeaders({}, r)['Cache-Control'], `max-age=${w.MAX_RESPONSE_TTL}`);
+  assert.equal(w.dnsHeaders({}, r)['Cache-Control'], `public, max-age=${w.MAX_RESPONSE_TTL}`);
 });
 
 test('dnsHeaders says no-store when no TTL can be determined', () => {
@@ -50,7 +50,7 @@ test('dnsHeaders says no-store when no TTL can be determined', () => {
 });
 
 test('dnsHeaders accepts an explicit TTL for locally synthesised answers', () => {
-  assert.equal(w.dnsHeaders({}, w.LOCAL_RESPONSE_TTL)['Cache-Control'], `max-age=${w.LOCAL_RESPONSE_TTL}`);
+  assert.equal(w.dnsHeaders({}, w.LOCAL_RESPONSE_TTL)['Cache-Control'], `public, max-age=${w.LOCAL_RESPONSE_TTL}`);
   assert.equal(w.dnsHeaders({}, 0)['Cache-Control'], 'public, max-age=0', 'an explicit zero TTL is honoured');
   assert.equal(w.dnsHeaders({}, null)['Cache-Control'], 'no-store', 'null means the answer must not be reused');
 });
