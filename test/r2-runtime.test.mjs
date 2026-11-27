@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import worker from '../src/index.ts';
 import { query, response, record, counts, rcodeOf } from './helpers.mjs';
 
@@ -71,10 +70,11 @@ test('Workers entrypoint loads an R2 snapshot and blocks a rule without text-lis
     ctx()
   );
 
+  const blockedBody = await blocked.arrayBuffer();
   assert.equal(blocked.status, 200);
   assert.equal(blocked.headers.get('x-blocked'), 'ads.example');
-  assert.equal(rcodeOf(await blocked.arrayBuffer()), 3);
-  assert.deepEqual(counts(await blocked.clone().arrayBuffer()), { qd: 1, an: 0, ns: 0, ar: 0 });
+  assert.equal(rcodeOf(blockedBody), 3);
+  assert.deepEqual(counts(blockedBody), { qd: 1, an: 0, ns: 0, ar: 0 });
   assert.equal(calls.length, 0, 'R2 BLOCK decision must short-circuit upstream resolution');
 });
 
