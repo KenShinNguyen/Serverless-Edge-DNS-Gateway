@@ -227,7 +227,7 @@ test('/debug is off unless DEBUG_ENABLED is set, and never prints an upstream in
   assert.equal(body.adBlock.blocklist, 2);
   assert.equal(body.adBlock.allowlist, 1);
   assert.equal(body.privateTld.entries, 3);
-  assert.equal(body.dnsRedirect.rules, 15);
+  assert.equal(body.dnsRedirect.rules, 16);
   assert.equal(body.geoBypass.entries, 1);
 });
 
