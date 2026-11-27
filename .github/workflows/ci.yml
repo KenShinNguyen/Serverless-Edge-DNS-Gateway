@@ -1,9 +1,9 @@
 # Kiểm thử tự động cho edge function và script cập nhật list.
 #
-# Toàn bộ mã DNS trong functions/[[path]].js là parser/serializer wire-format
+# Toàn bộ mã DNS trong src/index.ts là parser/serializer wire-format
 # viết tay: một lỗi lệch offset không làm gì đổ vỡ ồn ào, nó chỉ trả về câu trả
 # lời sai cho mọi thiết bị đang dùng gateway. Chạy test trên mỗi PR là cách rẻ
-# nhất để bắt loại lỗi đó trước khi Cloudflare Pages deploy.
+# nhất để bắt loại lỗi đó trước khi Cloudflare Workers deploy.
 #
 # package-lock.json pins the dependency graph so CI and the R2 publisher use reproducible installs.
 # Node 24 provides the test runner and runtime required by the Worker toolchain.
