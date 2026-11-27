@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { __internals as w } from '../functions/[[path]].js';
+import { __internals as w } from '../src/index.ts';
 import { query, opt, encodeName, bytes } from './helpers.mjs';
 
 /** Pull the ECS option (code 8) out of the OPT record of a query, if present. */
@@ -62,8 +62,8 @@ test('injectECS unwraps an IPv4-mapped IPv6 client address', () => {
 });
 
 test('injectECS replaces an OPT record the client already sent', () => {
-  const q = query({ additional: [opt({ rdata: [] })] });
-  const out = w.injectECS(q, '203.0.113.45');
+  const q = query({ questions: [{ name: 'akamai.net', type: 1 }], additional: [opt({ rdata: [] })] });
+  const out = w.injectECS(q, '203.0.113.45', 'akamai.net');
   assert.equal(arCount(out), 1, 'exactly one OPT, not two');
   assert.deepEqual(readEcs(out).addr, [203, 0, 113]);
 });
@@ -98,7 +98,7 @@ test('stripOPT leaves a non-OPT additional record in place', () => {
   assert.ok(bytes(stripped.buffer).join(',').includes(tsig.join(',')), 'the TSIG-shaped record survives');
 });
 
-function inject(ip) { return w.injectECS(query(), ip); }
+function inject(ip) { return w.injectECS(query({ questions: [{ name: 'akamai.net', type: 1 }] }), ip, 'akamai.net'); }
 
 /**
  * A message claiming an answer record whose rdata runs off the end. stripOPT
