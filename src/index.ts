@@ -1,4 +1,10 @@
 import { RuleSnapshotManager } from './rules-engine.ts';
+import {
+  PRIVATE_TLD_ENTRIES,
+  REDIRECT_RULE_ENTRIES,
+  GEO_BYPASS_DOMAINS,
+  FALLBACK_BLOCK_DOMAINS,
+} from './bundled-rules.ts';
 
 const ruleSnapshotManager = new RuleSnapshotManager();
 
@@ -23,7 +29,8 @@ let UPSTREAM_FALLBACK = 'https://dns.quad9.net/dns-query';
 // choose its upstream after the domain policy is evaluated.
 let UPSTREAM_ECS = 'https://dns.google/dns-query';
 let UPSTREAM_ECS_FALLBACK = 'https://dns11.quad9.net/dns-query';
-let UPSTREAM_GEO_BYPASS = 'https://dns.mullvad.net/dns-query'; // Optional no-ECS resolver for explicitly allowed geo-bypass domains
+let UPSTREAM_GEO_BYPASS = 'https://dns10.quad9.net/dns-query';
+let UPSTREAM_GEO_BYPASS_FALLBACK = 'https://dns.quad9.net/dns-query';
 let GEO_BYPASS_MODE = 'allowlist'; // 'allowlist' | 'disabled' | 'legacy-loopback'
 let GEO_BYPASS_ALLOWLIST = new Set();
 const UPSTREAM_TIMEOUT = 5000;
@@ -75,15 +82,12 @@ let BLOCK_HTTPS = false;  // TYPE 65  — HTTPS record queries
 
 // Block private/internal TLDs and router domains
 let BLOCK_PRIVATE_TLD = true;
-const PRIVATE_TLD_URL = '/rules/private_tlds.txt';
 
 // DNS redirect/rewrite (local CNAME overrides)
 const DNS_REDIRECT_ENABLED = true;
-const REDIRECT_RULES_URL = '/rules/redirect_rules.txt';
 
-// Dedicated Mullvad Upstream Domains
-const MULLVAD_UPSTREAM_ENABLED = true;
-const MULLVAD_UPSTREAM_URL = '/rules/mullvad_upstream.txt';
+// Dedicated no-ECS geo-bypass domains (bundled in bundled-rules.ts)
+const GEO_BYPASS_ENABLED = true;
 
 // /debug endpoint — enable via env DEBUG_ENABLED=true only when needed
 let DEBUG_ENABLED = false;
@@ -97,6 +101,7 @@ function applyEnvConfig(env) {
   if (env.UPSTREAM_ECS) UPSTREAM_ECS = env.UPSTREAM_ECS;
   if (env.UPSTREAM_ECS_FALLBACK) UPSTREAM_ECS_FALLBACK = env.UPSTREAM_ECS_FALLBACK;
   if (env.UPSTREAM_GEO_BYPASS) UPSTREAM_GEO_BYPASS = env.UPSTREAM_GEO_BYPASS;
+  if (env.UPSTREAM_GEO_BYPASS_FALLBACK) UPSTREAM_GEO_BYPASS_FALLBACK = env.UPSTREAM_GEO_BYPASS_FALLBACK;
   if (env.GEO_BYPASS_MODE) GEO_BYPASS_MODE = env.GEO_BYPASS_MODE;
   if (env.GEO_BYPASS_ALLOWLIST) GEO_BYPASS_ALLOWLIST = new Set(env.GEO_BYPASS_ALLOWLIST.split(',').map(v => v.trim().toLowerCase()).filter(Boolean));
   if (env.DOH_TOKEN) DOH_TOKEN = env.DOH_TOKEN;
@@ -177,9 +182,9 @@ function isGeoBypassAllowed(domain) {
 // ==================== STATE ====================
 let adBlocklist = new Set();
 let adAllowlist = new Set();
-let privateTlds = new Set();
-let redirectRules = new Map(); // domain → target domain
-let mullvadUpstreamDomains = new Set();
+let privateTlds = new Set(PRIVATE_TLD_ENTRIES);
+let redirectRules = new Map(REDIRECT_RULE_ENTRIES); // domain → target domain
+let geoBypassDomains = new Set(GEO_BYPASS_DOMAINS);
 let blocklistLastFetch = 0;
 let blocklistPromise = null;
 let blocklistsFetched = false; // Track if lists have been fetched at least once
@@ -229,63 +234,30 @@ async function fetchList(url) {
   } catch { return null; }
 }
 
-// Returns null on fetch failure — see fetchList.
-async function fetchRedirectRules(url) {
-  try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
-    if (!res.ok) return null;
-    const text = await res.text();
-    const rules = new Map();
-    forEachListLine(text, (line) => {
-      const parts = line.split(/\s+/);
-      if (parts.length === 2) rules.set(parts[0].toLowerCase(), parts[1].toLowerCase());
-    });
-    return rules;
-  } catch { return null; }
-}
-
 async function refreshBlocklists(baseUrl) {
-  // Skip refresh if:
-  // 1. Already fetched at least once AND
-  // 2. Within refresh interval
+  // Large text blocklists are a Pages/local fallback only. Static private-TLD,
+  // redirect and geo-bypass rules are bundled in the Worker and never fetched
+  // from /rules/*.txt assets.
   if (blocklistsFetched && Date.now() - blocklistLastFetch < ALL_LISTS_REFRESH_INTERVAL) return;
-
   if (blocklistPromise) return blocklistPromise;
 
   blocklistPromise = (async () => {
     try {
       const bUrl = new URL(BLOCKLIST_URL, baseUrl).toString();
       const aUrl = new URL(ALLOWLIST_URL, baseUrl).toString();
-      const pUrl = new URL(PRIVATE_TLD_URL, baseUrl).toString();
-      const rUrl = new URL(REDIRECT_RULES_URL, baseUrl).toString();
-      const mUrl = new URL(MULLVAD_UPSTREAM_URL, baseUrl).toString();
-
-      const [block, allow, privateList, redirRules, mullvadList] = await Promise.all([
+      const [block, allow] = await Promise.all([
         AD_BLOCK_ENABLED ? fetchList(bUrl) : Promise.resolve(new Set()),
-        AD_BLOCK_ENABLED ? fetchList(aUrl) : Promise.resolve(new Set()),
-        BLOCK_PRIVATE_TLD ? fetchList(pUrl) : Promise.resolve(new Set()),
-        DNS_REDIRECT_ENABLED ? fetchRedirectRules(rUrl) : Promise.resolve(new Map()),
-        MULLVAD_UPSTREAM_ENABLED ? fetchList(mUrl) : Promise.resolve(new Set())
+        AD_BLOCK_ENABLED ? fetchList(aUrl) : Promise.resolve(new Set())
       ]);
-
-      // Only install a list we actually fetched. fetchList returns null when the
-      // source is unreachable, and overwriting a good list with an empty one
-      // would silently disable filtering until the next interval elapses — one
-      // blip in serving rules/blocklists.txt would unblock every ad domain for
-      // six hours. A stale list is strictly better than no list.
       if (AD_BLOCK_ENABLED) {
         if (block) adBlocklist = block;
         if (allow) adAllowlist = allow;
       }
-      if (BLOCK_PRIVATE_TLD && privateList) privateTlds = privateList;
-      if (DNS_REDIRECT_ENABLED && redirRules) redirectRules = redirRules;
-      if (MULLVAD_UPSTREAM_ENABLED && mullvadList) mullvadUpstreamDomains = mullvadList;
-
-      // Timestamp advances even on failure: retrying every request while a
-      // source is down would stampede the origin. The next interval retries.
       blocklistLastFetch = Date.now();
-      blocklistsFetched = true; // Mark as fetched to prevent infinite re-fetch
-    } finally { blocklistPromise = null; }
+      blocklistsFetched = true;
+    } finally {
+      blocklistPromise = null;
+    }
   })();
 
   return blocklistPromise;
@@ -490,12 +462,12 @@ function isDomainPrivate(domain) {
 }
 
 // Check if domain matches Mullvad upstream list (suffix match including subdomains)
-function isMullvadDomain(domain) {
-  if (!domain || mullvadUpstreamDomains.size === 0) return false;
-  if (mullvadUpstreamDomains.has(domain)) return true;
+function isGeoBypassDomain(domain) {
+  if (!domain || geoBypassDomains.size === 0) return false;
+  if (geoBypassDomains.has(domain)) return true;
   let pos = 0;
   while ((pos = domain.indexOf('.', pos)) !== -1) {
-    if (mullvadUpstreamDomains.has(domain.substring(pos + 1))) return true;
+    if (geoBypassDomains.has(domain.substring(pos + 1))) return true;
     pos++;
   }
   return false;
@@ -855,8 +827,21 @@ async function forwardQuery(query, upstream) {
   return await res.arrayBuffer();
 }
 
-// Resolve DNS query with fallback and geo-bypass logic
-// Returns SERVFAIL on upstream errors, NXDOMAIN for geo-blocked domains
+// Geo-bypass always sends the original query without ECS and has an
+// independent no-ECS fallback so the path survives one public resolver outage.
+async function forwardGeoBypass(query) {
+  try {
+    return { data: await forwardQuery(query, UPSTREAM_GEO_BYPASS), upstream: 'Quad9-NonECS' };
+  } catch {
+    try {
+      return { data: await forwardQuery(query, UPSTREAM_GEO_BYPASS_FALLBACK), upstream: 'Fallback-NonECS' };
+    } catch {
+      return { data: buildServfail(query), upstream: 'Geo-Bypass-Failed' };
+    }
+  }
+}
+
+// Resolve DNS query with fallback and geo-bypass logic.
 async function resolveQuery(query, clientIP, domain = '') {
   const processed = injectECS(query, clientIP, domain);
   const ecsEligible = ECS_INJECTION_ENABLED && clientIP && clientIP !== 'unknown' &&
@@ -870,24 +855,14 @@ async function resolveQuery(query, clientIP, domain = '') {
     try {
       result = await forwardQuery(processed, fallback);
     } catch {
-      // Both primary and fallback upstream failed
       return buildServfail(query);
     }
   }
 
-  // If response contains 127.0.0.1, re-resolve via geo-bypass upstream.
-  // Send the ORIGINAL query (no ECS): the injected subnet is what triggers
-  // the geo-lock, and it would needlessly expose the client subnet to Mullvad.
   if (result && hasLoopbackInAnswer(result) && isGeoBypassAllowed(domain)) {
-    try {
-      const respMullvad = await forwardQuery(query, UPSTREAM_GEO_BYPASS);
-      if (!hasLoopbackInAnswer(respMullvad)) return respMullvad;
-      // Mullvad success nhưng vẫn có loopback → geo-block thực sự
-      return buildNxdomain(query);
-    } catch {
-      // Mullvad upstream failed (timeout or network error)
-      return buildServfail(query);
-    }
+    const bypass = await forwardGeoBypass(query);
+    if (!hasLoopbackInAnswer(bypass.data)) return bypass.data;
+    return buildNxdomain(query);
   }
 
   return result;
@@ -954,8 +929,7 @@ async function handleDNSQuery(request, context) {
   let queryDomain = '';
 
   // Load data if any domain-based filter is enabled
-  if (BLOCK_PRIVATE_TLD || DNS_REDIRECT_ENABLED || MULLVAD_UPSTREAM_ENABLED ||
-      (AD_BLOCK_ENABLED && !context.env?.RULES_BUCKET)) {
+  if (AD_BLOCK_ENABLED && !context.env?.RULES_BUCKET) {
     await ensureBlocklistsLoaded(request.url, context);
 
     // Parse domains once for both filters
@@ -966,17 +940,11 @@ async function handleDNSQuery(request, context) {
 
       // Mullvad Dedicated Upstream — send the original query without ECS:
       // Mullvad strips ECS anyway, so injecting it only leaks the client subnet
-      if (MULLVAD_UPSTREAM_ENABLED && isMullvadDomain(domain)) {
-        try {
-          const data = await forwardQuery(query, UPSTREAM_GEO_BYPASS);
-          return new Response(data, {
-            headers: dnsHeaders(cors, data, { 'X-Upstream': 'Mullvad' })
-          });
-        } catch {
-          return new Response(buildServfail(query), {
-            headers: dnsHeaders(cors, null, { 'X-Upstream': 'Mullvad-Failed' })
-          });
-        }
+      if (GEO_BYPASS_ENABLED && isGeoBypassDomain(domain)) {
+        const bypass = await forwardGeoBypass(query);
+        return new Response(bypass.data, {
+          headers: dnsHeaders(cors, bypass.data, { 'X-Upstream': bypass.upstream })
+        });
       }
 
       // Private TLD check (NXDOMAIN)
@@ -1054,7 +1022,7 @@ async function handleRequest(request, context) {
 
   if (route === 'debug') {
     if (!DEBUG_ENABLED) return new Response('Not Found', { status: 404 });
-    if (BLOCK_PRIVATE_TLD || DNS_REDIRECT_ENABLED || MULLVAD_UPSTREAM_ENABLED ||
+    if (BLOCK_PRIVATE_TLD || DNS_REDIRECT_ENABLED || GEO_BYPASS_ENABLED ||
         (AD_BLOCK_ENABLED && !context.env?.RULES_BUCKET)) {
       await ensureBlocklistsLoaded(request.url, context);
     }
@@ -1077,7 +1045,7 @@ async function handleRequest(request, context) {
       blockedTypes: { ANY: BLOCK_ANY, AAAA: BLOCK_AAAA, PTR: BLOCK_PTR, HTTPS: BLOCK_HTTPS },
       privateTld: { enabled: BLOCK_PRIVATE_TLD, entries: privateTlds.size },
       dnsRedirect: { enabled: DNS_REDIRECT_ENABLED, rules: redirectRules.size },
-      mullvadUpstream: { enabled: MULLVAD_UPSTREAM_ENABLED, entries: mullvadUpstreamDomains.size }
+      geoBypass: { enabled: GEO_BYPASS_ENABLED, entries: geoBypassDomains.size, primary: maskUpstream(UPSTREAM_GEO_BYPASS), fallback: maskUpstream(UPSTREAM_GEO_BYPASS_FALLBACK) }
     }, null, 2), { headers: { 'Content-Type': 'application/json' } });
   }
 
@@ -1171,7 +1139,9 @@ export const __internals = {
   buildServfail,
   isDomainBlocked,
   isDomainPrivate,
-  isMullvadDomain,
+  isGeoBypassDomain,
+  forwardGeoBypass,
+  getBundledRuleCounts: () => ({ privateTld: privateTlds.size, redirect: redirectRules.size, geoBypass: geoBypassDomains.size }),
   injectECS,
   stripOPT,
   ipv6ToBytes,
@@ -1190,13 +1160,13 @@ export const __internals = {
     if (allow) adAllowlist = allow;
     if (priv) privateTlds = priv;
     if (redirect) redirectRules = redirect;
-    if (mullvad) mullvadUpstreamDomains = mullvad;
+    if (mullvad) geoBypassDomains = mullvad;
   },
   __resetState() {
     adBlocklist = new Set();
     adAllowlist = new Set();
-    privateTlds = new Set();
-    redirectRules = new Map();
-    mullvadUpstreamDomains = new Set();
+    privateTlds = new Set(PRIVATE_TLD_ENTRIES);
+    redirectRules = new Map(REDIRECT_RULE_ENTRIES);
+    geoBypassDomains = new Set(GEO_BYPASS_DOMAINS);
   }
 };
