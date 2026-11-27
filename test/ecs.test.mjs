@@ -98,7 +98,7 @@ test('stripOPT leaves a non-OPT additional record in place', () => {
   assert.ok(bytes(stripped.buffer).join(',').includes(tsig.join(',')), 'the TSIG-shaped record survives');
 });
 
-function inject(ip) { return w.injectECS(query({ questions: [{ name: 'akamai.net', type: 1 }] }), ip); }
+function inject(ip) { return w.injectECS(query({ questions: [{ name: 'akamai.net', type: 1 }] }), ip, 'akamai.net'); }
 
 /**
  * A message claiming an answer record whose rdata runs off the end. stripOPT
