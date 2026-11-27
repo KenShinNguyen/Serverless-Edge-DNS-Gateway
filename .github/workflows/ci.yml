@@ -5,9 +5,8 @@
 # lời sai cho mọi thiết bị đang dùng gateway. Chạy test trên mỗi PR là cách rẻ
 # nhất để bắt loại lỗi đó trước khi Cloudflare Pages deploy.
 #
-# Repo hiện có package.json để typecheck, unit test và biên dịch binary rules.
-# Không có package-lock.json nên CI dùng `npm install` thay vì `npm ci`.
-# Node 24 cung cấp test runner và runtime tương thích với Worker toolchain.
+# package-lock.json pins the dependency graph so CI and the R2 publisher use reproducible installs.
+# Node 24 provides the test runner and runtime required by the Worker toolchain.
 name: CI
 
 on:
@@ -40,7 +39,7 @@ jobs:
           node-version: '24'
 
       - name: Install dependencies
-        run: npm install --ignore-scripts
+        run: npm ci --ignore-scripts
 
       - name: TypeScript check
         run: npm run typecheck
