@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { __internals as w } from '../functions/[[path]].js';
+import { __internals as w } from '../src/index.ts';
 import { query, response, record, encodeName, counts, rcodeOf } from './helpers.mjs';
 
 test('encodeDomainName round-trips through decodeName', () => {
