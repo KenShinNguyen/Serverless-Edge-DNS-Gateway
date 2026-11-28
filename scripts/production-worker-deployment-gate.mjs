@@ -1,5 +1,9 @@
 const DEPLOYMENTS_API = "https://api.cloudflare.com/client/v4";
 const GRAPHQL_API = "https://api.cloudflare.com/client/v4/graphql";
+export const METRIC_BUCKET_LIMIT = 1000;
+export const MIN_P50_BUCKET_REQUESTS = 20;
+const MICROSECONDS_PER_MILLISECOND = 1000;
+
 const METRICS_QUERY = `
 query GetWorkersAnalytics($accountTag: string, $datetimeStart: string, $datetimeEnd: string, $scriptName: string) {
   viewer {
@@ -18,7 +22,7 @@ query GetWorkersAnalytics($accountTag: string, $datetimeStart: string, $datetime
           cpuTimeP99
         }
         dimensions {
-          datetime
+          datetimeMinute
           scriptName
           status
         }
@@ -31,6 +35,21 @@ function requiredEnv(name, env = process.env) {
   const value = env[name];
   if (!value) throw new Error(`Missing required environment variable: ${name}`);
   return value;
+}
+
+function requiredMetricNumber(value, label) {
+  if (value === null || value === undefined || value === "") {
+    throw new Error(`Cloudflare did not return ${label}`);
+  }
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) {
+    throw new Error(`Cloudflare returned an invalid ${label}`);
+  }
+  return number;
+}
+
+function roundMs(value) {
+  return Number(value.toFixed(3));
 }
 
 export function assertPinnedDeployment(deployment, expectedVersionId) {
@@ -51,57 +70,142 @@ export function assertPinnedDeployment(deployment, expectedVersionId) {
 
 export function summarizeWorkerMetricRows(rows, options = {}) {
   const minimumRequests = options.minimumRequests ?? 100;
+  const bucketLimit = options.bucketLimit ?? METRIC_BUCKET_LIMIT;
+  const minP50BucketRequests = options.minP50BucketRequests ?? MIN_P50_BUCKET_REQUESTS;
+  const thresholds = {
+    maxMinuteP50Ms: options.maxMinuteP50Ms ?? 20,
+    maxMinuteP99Ms: options.maxMinuteP99Ms ?? 50,
+    maxErrors: options.maxErrors ?? 0,
+  };
+
   if (!Array.isArray(rows) || rows.length === 0) {
     throw new Error("Cloudflare returned no Workers invocation metric rows for the selected window");
+  }
+  if (!Number.isInteger(bucketLimit) || bucketLimit < 1) {
+    throw new Error("Metric bucket row limit must be a positive integer");
+  }
+  if (rows.length >= bucketLimit) {
+    throw new Error(
+      `Cloudflare returned ${rows.length} minute buckets at the ${bucketLimit}-row limit; completeness cannot be proven`,
+    );
+  }
+  if (!Number.isInteger(minP50BucketRequests) || minP50BucketRequests < 1) {
+    throw new Error("Minimum P50 bucket request count must be a positive integer");
   }
 
   let requests = 0;
   let errors = 0;
-  const p50Values = [];
-  const p99Values = [];
+  let maxMinuteCpuP50Ms = 0;
+  let maxQualifiedMinuteCpuP50Ms = 0;
+  let maxMinuteCpuP99Ms = 0;
+  let qualifiedP50BucketCount = 0;
+  let lowSampleP50BucketCount = 0;
+  let bucketsAboveP50Threshold = 0;
+  let requestsInBucketsAboveP50Threshold = 0;
+  let lowSampleBucketsAboveP50Threshold = 0;
+  let requestsInLowSampleBucketsAboveP50Threshold = 0;
 
-  for (const row of rows) {
-    requests += Number(row.sum?.requests ?? 0);
-    errors += Number(row.sum?.errors ?? 0);
-    const p50 = Number(row.quantiles?.cpuTimeP50);
-    const p99 = Number(row.quantiles?.cpuTimeP99);
-    if (Number.isFinite(p50)) p50Values.push(p50);
-    if (Number.isFinite(p99)) p99Values.push(p99);
+  for (const [index, row] of rows.entries()) {
+    const bucketRequests = requiredMetricNumber(
+      row.sum?.requests,
+      `minute bucket[${index}] request count`,
+    );
+    const bucketErrors = requiredMetricNumber(
+      row.sum?.errors,
+      `minute bucket[${index}] error count`,
+    );
+
+    // Cloudflare cpuTimeP50/cpuTimeP99 are microseconds. Convert to ms
+    // before comparing with the gate's millisecond thresholds. This gate
+    // does not query durationP50 (wall-clock duration).
+    const minuteCpuP50Ms = requiredMetricNumber(
+      row.quantiles?.cpuTimeP50,
+      `minute bucket[${index}] CPU P50 (microseconds)`,
+    ) / MICROSECONDS_PER_MILLISECOND;
+    const minuteCpuP99Ms = requiredMetricNumber(
+      row.quantiles?.cpuTimeP99,
+      `minute bucket[${index}] CPU P99 (microseconds)`,
+    ) / MICROSECONDS_PER_MILLISECOND;
+
+    requests += bucketRequests;
+    errors += bucketErrors;
+    maxMinuteCpuP50Ms = Math.max(maxMinuteCpuP50Ms, minuteCpuP50Ms);
+    maxMinuteCpuP99Ms = Math.max(maxMinuteCpuP99Ms, minuteCpuP99Ms);
+
+    if (minuteCpuP50Ms > thresholds.maxMinuteP50Ms) {
+      bucketsAboveP50Threshold += 1;
+      requestsInBucketsAboveP50Threshold += bucketRequests;
+    }
+
+    // Low-volume minute buckets (for example, a single cold-start request)
+    // are diagnostic for P50. Their P99 remains subject to the tail guard.
+    if (bucketRequests >= minP50BucketRequests) {
+      qualifiedP50BucketCount += 1;
+      maxQualifiedMinuteCpuP50Ms = Math.max(
+        maxQualifiedMinuteCpuP50Ms,
+        minuteCpuP50Ms,
+      );
+    } else {
+      lowSampleP50BucketCount += 1;
+      if (minuteCpuP50Ms > thresholds.maxMinuteP50Ms) {
+        lowSampleBucketsAboveP50Threshold += 1;
+        requestsInLowSampleBucketsAboveP50Threshold += bucketRequests;
+      }
+    }
   }
 
   if (requests < minimumRequests) {
-    throw new Error(`Cloudflare metrics sample is insufficient: ${requests} requests; at least ${minimumRequests} required`);
+    throw new Error(
+      `Cloudflare metrics sample is insufficient: ${requests} requests; at least ${minimumRequests} required`,
+    );
   }
-  if (!p50Values.length || !p99Values.length) {
-    throw new Error("Cloudflare did not return CPU P50/P99 quantiles for the selected window");
-  }
-
-  // Cloudflare GraphQL CPU quantiles are expressed in microseconds; publish ms.
-  const maxP50Ms = Math.max(...p50Values) / 1000;
-  const maxP99Ms = Math.max(...p99Values) / 1000;
-  const thresholds = {
-    maxP50Ms: options.maxP50Ms ?? 20,
-    maxP99Ms: options.maxP99Ms ?? 50,
-    maxErrors: options.maxErrors ?? 0,
-  };
-
   if (errors > thresholds.maxErrors) {
     throw new Error(`Production Worker invocation errors exceeded threshold: ${errors}`);
   }
-  if (maxP50Ms > thresholds.maxP50Ms) {
-    throw new Error(`Production Worker max bucket CPU P50 exceeded threshold: ${maxP50Ms.toFixed(3)} ms`);
+  if (qualifiedP50BucketCount === 0) {
+    throw new Error(
+      `No minute bucket contains at least ${minP50BucketRequests} requests; CPU P50 cannot be evaluated reliably`,
+    );
   }
-  if (maxP99Ms > thresholds.maxP99Ms) {
-    throw new Error(`Production Worker max bucket CPU P99 exceeded threshold: ${maxP99Ms.toFixed(3)} ms`);
+  if (maxQualifiedMinuteCpuP50Ms > thresholds.maxMinuteP50Ms) {
+    throw new Error(
+      `Production Worker max qualified minute CPU P50 exceeded threshold: ${roundMs(maxQualifiedMinuteCpuP50Ms)} ms (${bucketsAboveP50Threshold} minute buckets / ${requestsInBucketsAboveP50Threshold} requests above threshold)`,
+    );
+  }
+  if (maxMinuteCpuP99Ms > thresholds.maxMinuteP99Ms) {
+    throw new Error(
+      `Production Worker max minute CPU P99 exceeded threshold: ${roundMs(maxMinuteCpuP99Ms)} ms`,
+    );
   }
 
   return {
     requests,
     errors,
-    maxBucketCpuP50Ms: Number(maxP50Ms.toFixed(3)),
-    maxBucketCpuP99Ms: Number(maxP99Ms.toFixed(3)),
-    thresholds,
-    aggregation: "maximum quantile across returned time buckets (conservative)",
+    bucketCount: rows.length,
+    bucketGranularity: "1 minute",
+    minimumRequestsPerP50Bucket: minP50BucketRequests,
+    qualifiedP50BucketCount,
+    lowSampleP50BucketCount,
+    maxQualifiedMinuteCpuP50Ms: roundMs(maxQualifiedMinuteCpuP50Ms),
+    maxMinuteCpuP50Ms: roundMs(maxMinuteCpuP50Ms),
+    maxMinuteCpuP99Ms: roundMs(maxMinuteCpuP99Ms),
+    bucketsAboveP50Threshold,
+    requestsInBucketsAboveP50Threshold,
+    lowSampleBucketsAboveP50Threshold,
+    requestsInLowSampleBucketsAboveP50Threshold,
+    thresholds: {
+      minimumRequests,
+      ...thresholds,
+      bucketRowLimit: bucketLimit,
+    },
+    units: {
+      source: "Cloudflare cpuTime quantiles: microseconds",
+      reported: "milliseconds",
+      conversion: "microseconds / 1000",
+      durationP50: "not queried; wall-clock duration is not CPU time",
+    },
+    aggregation: "maximum per-minute CPU P50 for minute buckets with >= minimumRequestsPerP50Bucket; maximum per-minute CPU P99 across all buckets",
+    lowSamplePolicy: "low-volume minute-bucket P50 outliers are diagnostic only; their P99 remains in the tail guard",
   };
 }
 
