@@ -120,13 +120,27 @@ test('buildRedirectResponse preserves a multi-hop CNAME chain with compression p
   assert.equal((v[off] << 8) | v[off + 1], 5);
   assert.equal(w.decodeName(v, off + 10).name, 'www.bilibili.tv.w.cdngslb.com');
 
-  off += 10 + ((v[off + 8] << 8) | v[off + 9]);
+  // Skip the synthetic QNAME -> target CNAME. The first upstream record
+  // is owned by targetDomain and points to edge.cdn.example.
+  const syntheticRdlen = (v[off + 8] << 8) | v[off + 9];
+  off += 10 + syntheticRdlen;
+  assert.equal(w.decodeName(v, off).name, 'www.bilibili.tv.w.cdngslb.com');
+  off = w.decodeName(v, off).nextOff;
+  assert.equal((v[off] << 8) | v[off + 1], 5);
+  assert.equal(w.decodeName(v, off + 10).name, 'edge.cdn.example');
+
+  // The second upstream record is owned by edge.cdn.example and points
+  // to cdn.example.
+  const firstUpstreamRdlen = (v[off + 8] << 8) | v[off + 9];
+  off += 10 + firstUpstreamRdlen;
   assert.equal(w.decodeName(v, off).name, 'edge.cdn.example');
   off = w.decodeName(v, off).nextOff;
   assert.equal((v[off] << 8) | v[off + 1], 5);
   assert.equal(w.decodeName(v, off + 10).name, 'cdn.example');
 
-  off += 10 + ((v[off + 8] << 8) | v[off + 9]);
+  // The final upstream record is the A record owned by cdn.example.
+  const secondUpstreamRdlen = (v[off + 8] << 8) | v[off + 9];
+  off += 10 + secondUpstreamRdlen;
   assert.equal(w.decodeName(v, off).name, 'cdn.example');
   off = w.decodeName(v, off).nextOff;
   assert.equal((v[off] << 8) | v[off + 1], 1);
