@@ -307,7 +307,9 @@ export class RuleSnapshotManager {
 
     const now = Date.now();
     if (!this.active && !this.pending) {
-      if (now >= this.nextCheckAt && !this.manifestInFlight) {
+      if (this.manifestInFlight) {
+        await this.manifestInFlight;
+      } else if (now >= this.nextCheckAt) {
         await this.triggerManifestReload(bucket);
       }
     } else if (now >= this.nextCheckAt && !this.manifestInFlight) {
