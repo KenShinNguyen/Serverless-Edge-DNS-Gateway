@@ -156,7 +156,7 @@ test("manifest rejects an unsafe rule count before binary fetch", async () => {
   bucket.objects.set(manifest.key, buffer);
 
   const manager = new RuleSnapshotManager();
-  assert.equal(await manager.evaluate("ads.example.com", bucket, ctx()), "PASS");
+  assert.equal(await manager.evaluate("ads.example.com", bucket, ctx()), "UNAVAILABLE");
   assert.deepEqual(bucket.gets, ["compiled/latest.json"]);
   assert.equal(manager.getHealth().status, "degraded");
 });
@@ -172,7 +172,7 @@ test("manifest rejects an empty version before binary fetch", async () => {
   bucket.objects.set(manifest.key, buffer);
 
   const manager = new RuleSnapshotManager();
-  assert.equal(await manager.evaluate("ads.example.com", bucket, ctx()), "PASS");
+  assert.equal(await manager.evaluate("ads.example.com", bucket, ctx()), "UNAVAILABLE");
   assert.deepEqual(bucket.gets, ["compiled/latest.json"]);
   assert.equal(manager.getHealth().status, "degraded");
 });
