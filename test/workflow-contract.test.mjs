@@ -5,12 +5,14 @@ import { test } from "node:test";
 
 const root = resolve(import.meta.dirname, "..");
 const workflowPath = resolve(root, ".github/workflows/publish-rules-r2.yml");
+const ciPath = resolve(root, ".github/workflows/ci.yml");
 const blocklistWorkflowPath = resolve(root, ".github/workflows/Update_DNS_Blocklists.yml");
 const publishPath = resolve(root, "scripts/publish-r2.mjs");
 const verifyPath = resolve(root, "scripts/verify-r2-state.mjs");
 const wranglerPath = resolve(root, "wrangler.jsonc");
 
 const workflow = await readFile(workflowPath, "utf8");
+const ciWorkflow = await readFile(ciPath, "utf8");
 const blocklistWorkflow = await readFile(blocklistWorkflowPath, "utf8");
 const publish = await readFile(publishPath, "utf8");
 const verify = await readFile(verifyPath, "utf8");
@@ -64,6 +66,10 @@ test("workflow contract: R2 publisher is manual-only and defaults to dry-run", (
   assert.ok(workflow.includes("INPUT_ACTION: ${{ inputs.action }}"));
   assert.ok(workflow.includes('EFFECTIVE="dry-run"'));
   assert.ok(workflow.includes("publish|dry-run|rollback|unrevoke|verify"));
+});
+
+test("workflow contract: manually approved draft PRs trigger CI", () => {
+  assert.match(ciWorkflow, /pull_request:\\s*\\n\\s+types:\\s*\\[opened, synchronize, reopened, ready_for_review\\]/);
 });
 
 test("workflow contract: blocklist refresh opens a draft PR instead of pushing to main", () => {
