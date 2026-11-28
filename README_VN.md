@@ -9,7 +9,7 @@ Dịch vụ DNS-over-HTTPS (DoH) bảo mật, hiệu năng cao, chạy trên h�
 
 *   **Mức độ sử dụng miễn phí**: chạy trên hạ tầng Cloudflare Workers với hạn mức 100,000 requests mỗi ngày. Với mức tiêu thụ trung bình 200 – 4000 requests/thiết bị/ngày, bạn có thể sử dụng khoảng 10-20 thiết bị trên cùng một tài khoản (thậm chí 100-200 thiết bị nếu dùng thông thường)
 *   **Hỗ trợ Custom Domain**: Dễ dàng gắn tên miền riêng để có địa chỉ DNS ngắn gọn, chuyên nghiệp. Bạn có thể sử dụng nhiều tài khoản Cloudflare khác nhau để nhân bản hạn mức (x100k/tài khoản) mà vẫn dùng được tên miền tùy chỉnh.
-*   **Chặn quảng cáo thông minh**: Tự động lọc quảng cáo tại Edge bằng các danh sách chuyên nghiệp (AdGuard, ABPVN, Bypass-VN...), được cập nhật tự động mỗi 3 giờ.
+*   **Chặn quảng cáo thông minh**: Lọc tại Edge bằng các danh sách chuyên nghiệp (AdGuard, HaGeZi...). GitHub Actions kiểm tra nguồn mỗi 3 giờ và tạo PR nháp có guard để duyệt.
 *   **Tối ưu hóa vị trí địa lý (ECS - RFC 7871)**: Tự động chèn EDNS Client Subnet (IPv4 `/24`, IPv6 `/48`) để đảm bảo các CDN (như Akamai, CloudFront, Fastly, BunnyCDN, Gcore) điều hướng bạn đến máy chủ gần nhất.
 *   **Độ tin cậy cao với hệ thống dự phòng**: 
     *   **Primary/Fallback**: Tự động chuyển sang máy chủ dự phòng (*khác nhà cung cấp*) nếu máy chủ chính gặp sự cố.
@@ -28,7 +28,11 @@ Dịch vụ DNS-over-HTTPS (DoH) bảo mật, hiệu năng cao, chạy trên h�
 ### 1. Fork dự án & Bật Actions
 1. [Fork dự án này](../../fork) về tài khoản GitHub của bạn.
 2. Truy cập tab **Actions** trong repository bạn vừa fork và nhấn **I understand my workflows, go ahead and enable them**.
-3. Chọn và **Enable** thủ công 2 workflows: `Update DNS Blocklists` và `Delete Old Workflow Runs`. (`Update Filter Lists` là workflow Lớp 2 / CGPS tuỳ chọn — cứ để tắt nếu bạn chưa tạo các secrets mô tả ở [phần dưới](#-lớp-2-lọc-bảo-mật-bằng-cloudflare-gateway-cgps).)
+3. Enable `Update DNS Blocklists` và `Delete Old Workflow Runs`. (`Update Filter Lists` là workflow Lớp 2 / CGPS tuỳ chọn — cứ để tắt nếu bạn chưa tạo các secrets mô tả ở [phần dưới](#-lớp-2-lọc-bảo-mật-bằng-cloudflare-gateway-cgps).)
+
+`Update DNS Blocklists` kiểm tra nguồn mỗi 3 giờ, áp dụng guard số lượng tối thiểu và mức sụt tối đa, rồi tạo/cập nhật **PR nháp**. Bạn phải review và merge thủ công; workflow không tự commit rule vào `main`.
+
+Workflow `Compile and Publish Rules to R2` chỉ chạy thủ công và mặc định là `dry-run`. Chỉ chọn `publish` khi đã duyệt ruleset và chủ động muốn ghi Production R2.
 
 ### 2. Triển khai lên Cloudflare Workers
 1. Kết nối repository với Cloudflare Workers bằng luồng build/deploy của Workers.
@@ -72,15 +76,15 @@ Các cài đặt theo từng deployment (upstream, token, CORS) được đọc 
 
 ## 🛠 Quản lý quy tắc (Rules)
 
-Các quy tắc nằm trong thư mục `rules/`. Khi bạn thay đổi và commit các file này lên GitHub, pipeline triển khai Worker đã cấu hình có thể biên dịch và phát hành bộ rules mới.
+Các quy tắc nằm trong thư mục `rules/`. Sau khi review và merge thay đổi vào `main`, chạy thủ công workflow `Compile and Publish Rules to R2`. Mặc định workflow là `dry-run`; chỉ chọn `publish` để ghi snapshot mới vào Production R2.
 
 Các quy tắc chi tiết:
 
-*   **`blocklists.txt`**: Được GitHub Actions cập nhật tự động mỗi 3 giờ.
+*   **`blocklists.txt`**: Workflow GitHub Actions kiểm tra nguồn mỗi 3 giờ và tạo/cập nhật PR nháp; không tự commit trực tiếp vào `main`.
     *   **So khớp theo wildcard**: một entry chặn cả domain đó *lẫn mọi subdomain bên dưới*, bằng cách duyệt từ tên được truy vấn ngược lên gốc và dừng ở kết quả khớp đầu tiên. Đây đúng là ngữ nghĩa mà nguồn list phát hành — hagezi cố tình lược bỏ subdomain trong `wildcard/<list>-onlydomains.txt`, và chỉ ~1,5% list gộp là subdomain của một entry khác, nên cách so khớp exact trước đây để lọt phần lớn hostname quảng cáo thật (`doubleclick.net` bị chặn nhưng `googleads.g.doubleclick.net` vẫn phân giải bình thường).
     *   **Allowlist được ưu tiên theo từng cấp**, nên rule cụ thể hơn thắng: `foo.example.com` nằm trong allowlist vẫn vào được dù `example.com` bị chặn; ngược lại `ads.example.com` bị chặn vẫn chặn dù `example.com` nằm trong allowlist.
     *   **Cách cấu hình**: Thay đổi các URL trong lệnh `curl` bên trong file [update_lists.sh](update_lists.sh) để thêm hoặc bớt các nguồn chặn.
-    *   **Chốt an toàn**: script huỷ cập nhật và giữ nguyên danh sách cũ nếu lỗi tải khiến danh sách tụt dưới 50.000 domain (đổi được bằng biến môi trường `MIN_DOMAINS`), hoặc nếu quá nửa số nguồn thất bại.
+    *   **Chốt an toàn**: giữ ngưỡng tối thiểu 50.000 domain cho blocklist và 100 domain cho allowlist; mỗi danh sách bị từ chối nếu giảm hơn 20% so với file đã commit trước đó. Hơn một nửa nguồn blocklist hoặc allowlist thất bại cũng làm workflow dừng. Có thể điều chỉnh qua `MIN_DOMAINS`, `MIN_ALLOW_DOMAINS`, `MIN_FINAL_BLOCK_DOMAINS`, `MIN_FINAL_ALLOW_DOMAINS`, `MAX_BLOCKLIST_DROP_PERCENT`, `MAX_ALLOWLIST_DROP_PERCENT`.
 *   **`allowlists.txt`**: Do chính workflow sinh ra, từ hai nguồn: các list exclusion/exception của AdGuard, và toàn bộ rule ngoại lệ `@@` tìm thấy trong chính các nguồn blocklist. Domain ở đây được ưu tiên hơn `blocklists.txt` và bị trừ khỏi blocklist ngay lúc build, nên một domain không thể nằm ở cả hai list.
     *   **Vì sao `@@` quan trọng**: trong cú pháp AdBlock, `@@||example.com^` nghĩa là *đừng chặn* `example.com`. Nếu đưa thẳng rule đó vào blocklist thì đúng những domain mà tác giả filter cố ý mở chặn lại bị chặn — nên ngoại lệ được tách sang allowlist.
     *   **Chỉ dùng rule chặn cả domain**: rule cosmetic (`site.com##.ad-box`), rule có modifier (`||site.com^$popup`, `$third-party`, `$domain=`) và rule regex đều bị bỏ qua. Mỗi loại đều thu hẹp phạm vi theo ngữ cảnh mà DNS không nhìn thấy được; cắt bỏ phần thu hẹp đó sẽ biến "ẩn một banner trên trang này" thành "chặn cả trang này" — đó chính là cách một list dành cho trình duyệt có thể đánh sập một trang lớn.
@@ -135,7 +139,7 @@ Thiết bị ──DoH──▶ Cloudflare Worker (Lớp 1: quảng cáo/trackin
 ### Trình duyệt (Chrome / Edge / Firefox)
 1.  Vào **Cài đặt** > **Quyền riêng tư và bảo mật** > **Bảo mật**.
 2.  Bật **"Sử dụng DNS bảo mật"** và chọn **"Tùy chỉnh"**.
-3.  Dán URL của bạn: `https://your-project.pages.dev/dns-query`
+3.  Dán URL của bạn: `https://<ten-worker>.workers.dev/dns-query` (hoặc custom domain đã cấu hình).
 
 ### Apple (iOS / macOS)
 1.  Mở URL dự án của bạn bằng trình duyệt **Safari**.
@@ -158,7 +162,7 @@ Thiết bị ──DoH──▶ Cloudflare Worker (Lớp 1: quảng cáo/trackin
 > [!NOTE]
 > Khi đã đặt `DOH_TOKEN`, thêm token vào mọi endpoint: `/dns-query/<token>`, `/debug/<token>`, `/apple/<token>`. File cấu hình Apple sinh ra sẽ tự động nhúng URL kèm token.
 
-`/dns-query` nhận cả `POST` (body `application/dns-message`) lẫn `GET` (`?dns=<base64url>`) theo RFC 8484. Truy vấn ngắn hơn một header DNS, có cờ `QR=1`, hoặc không chứa câu hỏi nào sẽ bị trả `400` ngay tại edge, trước khi tốn một request lên upstream.
+`/dns-query` nhận cả `POST` (body `application/dns-message`) lẫn `GET` (`?dns=<base64url>`) theo RFC 8484. Mỗi DNS message sau giải mã tối đa **65.535 byte**; request vượt giới hạn nhận HTTP `413`. Message sai định dạng, packet có `QR=1` hoặc không có câu hỏi nhận `400` ngay tại Edge.
 
 ---
 
@@ -180,5 +184,9 @@ node --test 'test/*.test.mjs'
 | `test/handler.test.mjs` | Định tuyến đầu-cuối: chặn bằng token, failover, geo-bypass, `/debug`, `/apple`, CORS. |
 
 CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) chạy bộ test này trên mỗi pull request, kèm `shellcheck` cho `update_lists.sh` và kiểm tra định dạng các file rule tự biên soạn.
+
+### Log request bảo vệ quyền riêng tư
+
+Workers Logs bật ở mức sampling 5%, bật redaction query string và tắt native invocation logs. Worker chỉ ghi summary gồm `method`, `route` đã chuẩn hoá, HTTP `status` và `durationMs`. Không ghi URL/path thô (vì `DOH_TOKEN` nằm trong path), DNS name, IP client hoặc request headers. Không bật `invocation_logs` trừ khi token được chuyển khỏi URL path và có đánh giá quyền riêng tư riêng.
 
 ---
