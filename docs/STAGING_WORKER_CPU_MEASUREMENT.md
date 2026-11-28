@@ -18,9 +18,9 @@ The report queries one-minute buckets and preserves low-sample buckets. It conve
 ## Prepare staging
 
 1. Create a separate R2 bucket, for example dns-compiled-rules-staging.
-2. Deploy a separate Worker named serverless-edge-dns-gateway-staging with a dedicated Wrangler configuration whose RULES_BUCKET binding points only to that staging bucket. Do not reuse the production wrangler.jsonc for a staging deployment.
-3. Publish the compiled sharded snapshot to the staging bucket using a staging-only credential and explicit staging bucket/endpoint settings. Do not use production publisher credentials.
-4. Configure a staging-only DoH token and keep the staging endpoint separate from the production endpoint.
+2. Use the committed wrangler.staging.jsonc. It names the Worker serverless-edge-dns-gateway-staging, enables workers.dev, and binds RULES_BUCKET only to dns-compiled-rules-staging. Do not reuse the production wrangler.jsonc for a staging deployment. After creating the bucket, deploy the isolated config with: npx wrangler deploy --config wrangler.staging.jsonc.
+3. First run a dry-run with R2_BUCKET_NAME=dns-compiled-rules-staging and staging-only R2 endpoint/credentials. Only after validating the planned objects, publish to that staging bucket using the same staging-only values. Never point the publisher at the production bucket or use production publisher credentials.
+4. Configure a staging-only DoH token with npx wrangler secret put DOH_TOKEN --config wrangler.staging.jsonc and keep the staging endpoint separate from the production endpoint.
 5. Generate a controlled staging workload. Include enough requests to create adequately sampled minute buckets and retain the exact test window and workload shape in the evidence notes.
 
 Staging bucket creation, Worker deployment, artifact publication and traffic generation are deliberately operator-controlled prerequisites; this workflow does none of them.
