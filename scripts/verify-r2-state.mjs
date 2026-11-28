@@ -10,7 +10,7 @@ import { assertManifestInvariants, LATEST_KEY } from "./r2-manifest.mjs";
 function resolveRetentionLimit(raw = process.env.RETENTION_LIMIT) {
   if (raw === undefined || raw === "") return 5;
   const value = String(raw).trim();
-  if (!/^[1-9]\\d*$/.test(value)) {
+  if (!/^[1-9]\d*$/.test(value)) {
     throw new Error("Invalid RETENTION_LIMIT (must be a positive integer)");
   }
   const parsed = Number(value);
