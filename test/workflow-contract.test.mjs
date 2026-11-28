@@ -90,7 +90,7 @@ test("Workers observability is sampled, query-redacted and excludes raw invocati
 test("workflow contract: blocklist refresh opens a draft PR instead of pushing to main", () => {
   assert.match(blocklistWorkflow, /schedule:/);
   assert.match(blocklistWorkflow, /pull-requests:\\s*write/);
-  assert.match(blocklistWorkflow, /peter-evans\\/create-pull-request@v7/);
+  assert.ok(blocklistWorkflow.includes("peter-evans/create-pull-request@v7"));
   assert.match(blocklistWorkflow, /branch: automation\\/dns-blocklists/);
   assert.match(blocklistWorkflow, /draft: true/);
   assert.doesNotMatch(blocklistWorkflow, /git-auto-commit-action/);
