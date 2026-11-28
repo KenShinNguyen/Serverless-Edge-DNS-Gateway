@@ -8,18 +8,16 @@ import {
 import { createHash } from "node:crypto";
 import { validateEdnsV1Buffer } from "../src/rules-binary-format.ts";
 
-export const LATEST_KEY = "compiled/latest.json";
-export const REVOKED_LIMIT = 5;
-const SHA_RE = /^[0-9a-f]{64}$/;
-
-function validateSha(sha) {
-  if (!SHA_RE.test(sha)) throw new Error(`Invalid SHA-256: ${sha}`);
-}
-function assertRules(rules, label) {
-  if (!Number.isInteger(rules) || rules < 0) throw new Error(`Invalid rule count in ${label}: ${rules}`);
-}
-function expectedKey(sha) { return `compiled/rules-${sha}.bin`; }
-function expectedStats(sha) { return `compiled/stats-${sha}.json`; }
+import {
+  LATEST_KEY,
+  REVOKED_LIMIT,
+  assertManifestInvariants,
+  validateSha,
+  assertRules,
+  expectedKey,
+  expectedStats,
+} from "./r2-manifest.mjs";
+export { LATEST_KEY, REVOKED_LIMIT, assertManifestInvariants } from "./r2-manifest.mjs";
 
 export function projectManifestFromHistory(history, revoked = [], publishedAt = new Date().toISOString()) {
   if (!Array.isArray(history) || history.length === 0) throw new Error("Cannot project manifest from empty history");
