@@ -1,7 +1,7 @@
 # 🛡️ Serverless Edge DNS Gateway
 [English](README.md) | [Tiếng Việt](README_VN.md)
 
-A secure, high-performance DNS-over-HTTPS (DoH) proxy running on Cloudflare's global Edge via Pages Functions. Optimized for speed, geographic accuracy (ECS), and professional adblocking.
+A secure, high-performance DNS-over-HTTPS (DoH) proxy running on Cloudflare's global Edge via Cloudflare Workers. Optimized for speed, geographic accuracy (ECS), and professional adblocking.
 
 <p align="center">
   <img src="https://img.bibica.net/0Biaw3bp.webp" alt="ECS">
@@ -11,7 +11,7 @@ A secure, high-performance DNS-over-HTTPS (DoH) proxy running on Cloudflare's gl
 
 ## ⚡ Key Features
 
-*   **100% Free Usage**: Fully hosted on the Cloudflare Pages Free Tier with a limit of 100,000 requests per day. Given an average consumption of 200 – 4,000 requests per device daily, a single account can comfortably support 10 – 20 devices (or even 100 – 200 devices with casual usage).
+*   **100% Free Usage**: Fully hosted on Cloudflare Workers with a limit of 100,000 requests per day. Given an average consumption of 200 – 4,000 requests per device daily, a single account can comfortably support 10 – 20 devices (or even 100 – 200 devices with casual usage).
 *   **Custom Domain Scaling**: Attach your own domain for a professional, short DNS endpoint. You can spread usage across multiple Cloudflare accounts to multiply your quota (100k per account) while keeping your custom domains.
 *   **Smart Adblocking**: Local filtering using professional lists (AdGuard, ABPVN, Bypass-VN, etc.), automatically updated **every 3 hours**.
 *   **ECS Geo-Optimization (RFC 7871)**: Injects EDNS Client Subnet (IPv4 `/24`, IPv6 `/48`) to ensure CDNs (Akamai, CloudFront, Fastly, BunnyCDN, Gcore) resolve you to the nearest servers.
@@ -34,17 +34,16 @@ A secure, high-performance DNS-over-HTTPS (DoH) proxy running on Cloudflare's gl
 2. Go to the **Actions** tab in your forked repository and click **I understand my workflows, go ahead and enable them**.
 3. Manually select and **Enable** the following workflows: `Update DNS Blocklists` and `Delete Old Workflow Runs`. (`Update Filter Lists` is the optional Layer 2 / CGPS workflow — leave it disabled unless you set up the secrets described [below](#-layer-2-cloudflare-gateway-security-filtering-cgps).)
 
-### 2. Deploy to Cloudflare Pages
-1. Go to [Workers & Pages > Create application > Connect to Git](https://dash.cloudflare.com/?to=/:account/pages/new/provider/github).
-2. Connect your GitHub and select the forked repository.
-3. **Build Settings**: Leave everything as **default** (no changes needed).
-4. Click **Save and Deploy**.
+### 2. Deploy to Cloudflare Workers
+1. Connect the repository to Cloudflare Workers using the Workers build/deployment flow.
+2. Set the required Worker variables/secrets described below.
+3. Deploy with Wrangler or your configured Workers build pipeline.
 
 ---
 
 ## ⚙️ Configuration
 
-Per-deployment settings (upstreams, access token, CORS) are read from **environment variables** — set them in Cloudflare Pages under **Settings > Environment variables**, then redeploy. Feature toggles (adblock, ECS, query-type filtering) remain at the top of [functions/[[path]].js](functions/[[path]].js).
+Per-deployment settings (upstreams, access token, CORS) are read from **environment variables** — set them in Cloudflare Workers under **Settings > Variables and Secrets**, then redeploy. Feature toggles (adblock, ECS, query-type filtering) are configured in `src/index.ts` and `wrangler.jsonc`.
 
 ### Environment Variables
 
@@ -77,7 +76,7 @@ Per-deployment settings (upstreams, access token, CORS) are read from **environm
 
 ## 🛠 Rule Management (`rules/`)
 
-Rules are located in the `rules/` folder. When you modify and commit these files on GitHub, Cloudflare Pages will automatically sync and apply the new configuration.
+Rules are located in the `rules/` folder. When you modify and commit these files on GitHub, the configured Worker deployment pipeline can compile and publish the updated rules.
 
 Detailed rules:
 
@@ -103,7 +102,7 @@ Detailed rules:
 This project pairs naturally with [cloudflare-gateway-pihole-scripts (CGPS)](../../../cloudflare-gateway-pihole-scripts) in a **two-layer filtering architecture**, since the upstream (`UPSTREAM_PRIMARY`) is already a Cloudflare Gateway DoH endpoint:
 
 ```
-Device ──DoH──▶ Pages Function (Layer 1: ads/tracking ~1M domains, ECS, redirects)
+Device ──DoH──▶ Cloudflare Worker (Layer 1: ads/tracking ~1M domains, ECS, redirects)
                       │
                       ▼
             Cloudflare Gateway (Layer 2: CGPS-managed malware/phishing lists
@@ -169,7 +168,7 @@ Device ──DoH──▶ Pages Function (Layer 1: ads/tracking ~1M domains, ECS
 
 ## 🧪 Development
 
-The whole DNS layer in [functions/[[path]].js](functions/[[path]].js) is a hand-written wire-format parser and serializer, so it ships with a test suite. There is nothing to install — the repo stays build-free so Cloudflare Pages can deploy it straight from the root, and Node's own test runner (Node 18+) is all that is needed:
+The DNS layer in `src/index.ts` is a hand-written wire-format parser and serializer, with a Worker-native test suite. Node 24 and the repository's package scripts are used for local verification:
 
 ```bash
 node --test 'test/*.test.mjs'
@@ -184,6 +183,6 @@ node --test 'test/*.test.mjs'
 | `test/redirect.test.mjs` | QNAME rewriting and CNAME response synthesis. |
 | `test/handler.test.mjs` | End-to-end routing: token gating, failover, geo-bypass, `/debug`, `/apple`, CORS. |
 
-CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs these on every pull request, alongside `shellcheck` on `update_lists.sh` and a format check on the hand-maintained rule files.
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs these on every pull request, alongside `shellcheck` on `update_lists.sh` and sanity checks on the hand-maintained rule files.
 
 ---
