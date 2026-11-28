@@ -91,7 +91,7 @@ test("workflow contract: blocklist refresh opens a draft PR instead of pushing t
   assert.match(blocklistWorkflow, /schedule:/);
   assert.match(blocklistWorkflow, /pull-requests:\\s*write/);
   assert.ok(blocklistWorkflow.includes("peter-evans/create-pull-request@v7"));
-  assert.match(blocklistWorkflow, /branch: automation\\/dns-blocklists/);
+  assert.ok(blocklistWorkflow.includes("branch: automation/dns-blocklists"));
   assert.match(blocklistWorkflow, /draft: true/);
   assert.doesNotMatch(blocklistWorkflow, /git-auto-commit-action/);
   assert.doesNotMatch(blocklistWorkflow, /git push origin main/);
