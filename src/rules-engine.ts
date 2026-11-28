@@ -290,6 +290,7 @@ function parseManifest(raw: unknown): SnapshotState {
 export class RuleSnapshotManager {
   private active: SnapshotState | null = null;
   private pending: SnapshotState | null = null;
+  private previous: SnapshotState | null = null;
   private nextCheckAt = 0;
   private manifestInFlight: Promise<void> | null = null;
   private lastError: string | null = null;
@@ -324,6 +325,7 @@ export class RuleSnapshotManager {
     try {
       const result = await this.evaluateSnapshot(candidate, qname, bucket);
       if (this.pending === candidate) {
+        this.previous = this.active;
         this.active = candidate;
         this.pending = null;
         this.lastError = null;
@@ -337,9 +339,11 @@ export class RuleSnapshotManager {
       // A partially published or corrupt replacement must not displace the
       // last working snapshot. Continue using its already verified tables,
       // or load the corresponding old shard before returning PASS.
-      if (candidate !== this.active && this.active) {
+      // This also covers a shard that fails after the replacement was promoted.
+      const fallback = candidate === this.active ? this.previous : this.active;
+      if (fallback) {
         try {
-          return await this.evaluateSnapshot(this.active, qname, bucket);
+          return await this.evaluateSnapshot(fallback, qname, bucket);
         } catch (fallbackError) {
           this.lastError = fallbackError instanceof Error
             ? fallbackError.message.slice(0, 160)
