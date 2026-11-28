@@ -30,12 +30,31 @@ jobs:
         with:
           node-version: '24'
 
+      # A GITHUB_TOKEN-created PR does not trigger CI until a human marks
+      # it ready for review. Do not mutate that PR's HEAD while it is being
+      # reviewed; the next refresh runs after the existing PR is closed/merged.
+      - name: Check for an existing rule review PR
+        id: review
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          OPEN_PR="$(gh pr list --state open --head automation/dns-blocklists --json number --jq '.[0].number // empty')"
+          if [ -n "$OPEN_PR" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Rule review PR #$OPEN_PR is still open; skipping this refresh."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Run guarded update script
+        if: steps.review.outputs.exists != 'true'
         run: ./update_lists.sh
 
       # Updates never push directly to main. The generated candidate waits for
       # human review before it can become input to the R2 publisher.
       - name: Open or update the blocklist review PR
+        if: steps.review.outputs.exists != 'true'
         uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
