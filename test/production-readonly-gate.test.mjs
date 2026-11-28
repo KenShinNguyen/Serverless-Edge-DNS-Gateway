@@ -266,6 +266,8 @@ test("R2 read-only verifier uses a dedicated credential namespace and only GetOb
 test("Cloudflare Workers GraphQL gate groups by minute and checks the microsecond-to-millisecond contract", () => {
   assert.match(deploymentGate, /workersInvocationsAdaptive\(limit: 1000/);
   assert.match(deploymentGate, /datetimeMinute/);
+  assert.match(deploymentGate, /dimensions\s*\{\s*datetimeMinute\s+scriptName\s*\}/);
+  assert.doesNotMatch(deploymentGate, /dimensions\s*\{[^}]*\bstatus\b[^}]*\}/s);
   assert.match(deploymentGate, /MICROSECONDS_PER_MILLISECOND = 1000/);
   assert.ok(deploymentGate.includes("bucketsAboveP50Threshold"));
   assert.ok(deploymentGate.includes("requestsInBucketsAboveP50Threshold"));
