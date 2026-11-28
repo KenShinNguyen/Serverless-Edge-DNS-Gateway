@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { __internals as w } from '../src/index.ts';
-import { query, response, record, encodeName, counts, rcodeOf } from './helpers.mjs';
+import { query, response, record, encodeName, counts, rcodeOf, u16, u32 } from './helpers.mjs';
 
 test('encodeDomainName round-trips through decodeName', () => {
   const wire = w.encodeDomainName('cdn.example.net');
