@@ -123,9 +123,6 @@ export function summarizeStagingWorkerMetricRows(
       cpuP99Ms,
       p50SampleQualified: requests >= minP50BucketRequests,
       sampleClass: requests >= minP50BucketRequests ? "qualified" : "low-sample",
-      status: typeof row.dimensions?.status === "string"
-        ? row.dimensions.status
-        : null,
     };
   });
 
