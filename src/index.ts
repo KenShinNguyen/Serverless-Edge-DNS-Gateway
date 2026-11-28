@@ -10,7 +10,7 @@ const ruleSnapshotManager = new RuleSnapshotManager();
 
 // ==================== CONFIG ====================
 // Upstreams are meant to be configured per-deployment via environment
-// variables (Cloudflare Pages > Settings > Environment variables):
+// variables (Cloudflare Workers > Settings > Variables and Secrets):
 //   UPSTREAM_PRIMARY, UPSTREAM_FALLBACK, UPSTREAM_GEO_BYPASS
 // Never commit a personal Cloudflare Gateway URL here — this repo is public,
 // and anyone who forks it would route their DNS traffic through your account.
@@ -34,6 +34,8 @@ let UPSTREAM_GEO_BYPASS_FALLBACK = 'https://dns.quad9.net/dns-query';
 let GEO_BYPASS_MODE = 'allowlist'; // 'allowlist' | 'disabled' | 'legacy-loopback'
 let GEO_BYPASS_ALLOWLIST = new Set();
 const UPSTREAM_TIMEOUT = 5000;
+// RFC 8484 §6 caps application/dns-message payloads at 65,535 bytes.
+const MAX_DNS_MESSAGE_BYTES = 65535;
 
 // Optional access token (env: DOH_TOKEN). When set, every function route
 // requires the token as a path segment: /dns-query/<token>, /apple/<token>,
@@ -74,7 +76,7 @@ let ECS_ALLOWLIST = new Set(DEFAULT_ECS_ALLOWLIST);
 const ECS_PREFIX_V4 = 24;
 const ECS_PREFIX_V6 = 48;
 
-// Block query types early to save Cloudflare Pages requests
+// Block query types early to save Cloudflare Workers requests
 let BLOCK_ANY = false;    // TYPE 255 — ANY queries
 let BLOCK_AAAA = false;   // TYPE 28  — IPv6 queries
 let BLOCK_PTR = false;    // TYPE 12  — Reverse DNS
@@ -916,6 +918,45 @@ async function ensureBlocklistsLoaded(url, context) {
   }
 }
 
+// Read a DoH request body without buffering more than the RFC 8484 limit.
+// A Content-Length precheck avoids opening the stream for ordinary oversized
+// requests; the streaming counter remains authoritative for chunked bodies.
+async function readLimitedDnsBody(request, maxBytes) {
+  const contentLength = request.headers.get('content-length');
+  if (contentLength && /^\d+$/.test(contentLength)) {
+    const declared = Number(contentLength);
+    if (Number.isSafeInteger(declared) && declared > maxBytes) return null;
+  }
+
+  const reader = request.body?.getReader();
+  if (!reader) return new ArrayBuffer(0);
+
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel('DNS message exceeds RFC 8484 maximum').catch(() => {});
+        return null;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const body = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body.buffer;
+}
+
 // ==================== HANDLERS ====================
 async function handleDNSQuery(request, context) {
   const clientIP = request.headers.get('CF-Connecting-IP') || 'unknown';
@@ -928,14 +969,25 @@ async function handleDNSQuery(request, context) {
 
   let query;
   if (request.method === 'POST') {
-    query = await request.arrayBuffer();
+    query = await readLimitedDnsBody(request, MAX_DNS_MESSAGE_BYTES);
+    if (query === null) {
+      return new Response('DNS message exceeds 65535 bytes', { status: 413, headers: cors });
+    }
   } else if (request.method === 'GET') {
     const dns = new URL(request.url).searchParams.get('dns');
     if (!dns) return new Response('Missing dns parameter', { status: 400, headers: cors });
+    // 65,535 bytes encode to at most 87,380 unpadded base64url characters.
+    if (dns.length > Math.ceil(MAX_DNS_MESSAGE_BYTES / 3) * 4) {
+      return new Response('DNS message exceeds 65535 bytes', { status: 413, headers: cors });
+    }
     try {
       const b64 = dns.replace(/-/g, '+').replace(/_/g, '/');
       const padded = b64 + '=='.slice(0, (4 - b64.length % 4) % 4);
-      query = Uint8Array.from(atob(padded), c => c.charCodeAt(0)).buffer;
+      const decoded = Uint8Array.from(atob(padded), c => c.charCodeAt(0));
+      if (decoded.byteLength > MAX_DNS_MESSAGE_BYTES) {
+        return new Response('DNS message exceeds 65535 bytes', { status: 413, headers: cors });
+      }
+      query = decoded.buffer;
     } catch {
       // atob throws on malformed base64 — answer 400 instead of crashing
       return new Response('Invalid dns parameter', { status: 400, headers: cors });
@@ -1169,16 +1221,35 @@ async function handleRequest(request, context) {
 
 export default {
   async fetch(request, env, ctx) {
-    return handleRequest(request, {
-      request,
-      env,
-      waitUntil: ctx.waitUntil.bind(ctx)
-    });
+    const startedAt = Date.now();
+    const firstSegment = new URL(request.url).pathname.split('/').filter(Boolean)[0] || '';
+    const route = ['dns-query', 'debug', 'apple'].includes(firstSegment) ? firstSegment : 'other';
+    const method = ['GET', 'POST', 'OPTIONS'].includes(request.method) ? request.method : 'OTHER';
+    let status = 500;
+
+    try {
+      const response = await handleRequest(request, {
+        request,
+        env,
+        waitUntil: ctx.waitUntil.bind(ctx)
+      });
+      status = response.status;
+      return response;
+    } finally {
+      // Deliberately exclude URL/path, token, DNS name, client IP and headers.
+      // A path token must never be copied into an application log.
+      console.log(JSON.stringify({
+        event: 'request_summary',
+        method,
+        route,
+        status,
+        durationMs: Math.max(0, Date.now() - startedAt)
+      }));
+    }
   }
 }
 
-// Internal helpers exposed for the test suite in test/. Cloudflare Pages only
-// looks at the onRequest* exports, so this is inert at runtime.
+// Internal helpers exposed for the test suite in test/.
 export const __internals = {
   skipName,
   skipQuestions,
@@ -1209,6 +1280,7 @@ export const __internals = {
   tokenMatches,
   LOCAL_RESPONSE_TTL,
   MAX_RESPONSE_TTL,
+  MAX_DNS_MESSAGE_BYTES,
   // Test-only accessors for the module-level filter state
   __setState({ block, allow, priv, redirect, geoBypass }) {
     if (block) adBlocklist = block;
