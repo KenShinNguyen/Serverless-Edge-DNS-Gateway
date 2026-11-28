@@ -267,6 +267,11 @@ function shaFromStatsKey(key) {
   return match?.[1] ?? null;
 }
 
+function snapshotShaFromShardKey(key) {
+  const match = /^compiled\/shards\/([0-9a-f]{64})\//.exec(key);
+  return match?.[1] ?? null;
+}
+
 async function pruneUnpinned(s3, bucket, pinnedSet) {
   const keys = await listCompiledObjects(s3, bucket);
   const deletions = [];
