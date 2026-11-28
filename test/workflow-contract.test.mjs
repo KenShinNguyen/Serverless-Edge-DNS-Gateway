@@ -69,7 +69,7 @@ test("workflow contract: R2 publisher is manual-only and defaults to dry-run", (
 });
 
 test("workflow contract: manually approved draft PRs trigger CI", () => {
-  assert.match(ciWorkflow, /pull_request:\\s*\\n\\s+types:\\s*\\[opened, synchronize, reopened, ready_for_review\\]/);
+  assert.ok(ciWorkflow.includes("pull_request:\n    types: [opened, synchronize, reopened, ready_for_review]"));
 });
 
 test("workflow contract: blocklist refresh opens a draft PR instead of pushing to main", () => {
