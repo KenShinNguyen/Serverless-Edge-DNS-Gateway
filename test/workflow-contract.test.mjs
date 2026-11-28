@@ -63,7 +63,7 @@ test("R2 publisher and verifiers refuse an implicit bucket target", async () => 
   assert.equal(resolveBucketName("dns-compiled-rules-staging"), "dns-compiled-rules-staging");
   assert.throws(() => resolveBucketName(""), /R2_BUCKET_NAME is required/);
   assert.throws(() => resolveVerificationBucketName(""), /R2_BUCKET_NAME is required/);
-  assert.throws(
+  await assert.rejects(
     () => runReadOnlyR2Gate({
       R2_READONLY_ENDPOINT: "https://example.r2.cloudflarestorage.com",
       R2_READONLY_ACCESS_KEY_ID: "test-access-key",
