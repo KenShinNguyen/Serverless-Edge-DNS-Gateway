@@ -1047,15 +1047,6 @@ async function handleDNSQuery(request, context) {
       const binaryDecision = AD_BLOCK_ENABLED
         ? await ruleSnapshotManager.evaluate(domain, context.env?.RULES_BUCKET, context)
         : 'PASS';
-      if (binaryDecision === 'UNAVAILABLE') {
-        // The configured R2 ruleset could not be verified and there is no
-        // trusted previous snapshot. Return DNS SERVFAIL rather than allowing
-        // the query to bypass the ad-block policy silently.
-        return new Response(buildServfail(query), {
-          headers: dnsHeaders(cors, null, { 'X-Rules-Snapshot': 'unavailable' })
-        });
-      }
-
       const snapshotHealth = ruleSnapshotManager.getHealth();
       const fallbackDecision = AD_BLOCK_ENABLED && !snapshotHealth.active && isFallbackDomainBlocked(domain)
         ? 'BLOCK'
@@ -1063,6 +1054,19 @@ async function handleDNSQuery(request, context) {
       const textDecision = AD_BLOCK_ENABLED && !context.env?.RULES_BUCKET && isDomainBlocked(domain)
         ? 'BLOCK'
         : 'PASS';
+
+      if (
+        binaryDecision === 'UNAVAILABLE'
+        && fallbackDecision !== 'BLOCK'
+        && textDecision !== 'BLOCK'
+      ) {
+        // The configured R2 ruleset could not be verified and no trusted
+        // snapshot can safely authorize this name. Preserve known emergency
+        // blocks above; otherwise return SERVFAIL rather than pass upstream.
+        return new Response(buildServfail(query), {
+          headers: dnsHeaders(cors, null, { 'X-Rules-Snapshot': 'unavailable' })
+        });
+      }
 
       if (binaryDecision === 'BLOCK' || fallbackDecision === 'BLOCK' || textDecision === 'BLOCK') {
         return new Response(buildNxdomain(query), {
