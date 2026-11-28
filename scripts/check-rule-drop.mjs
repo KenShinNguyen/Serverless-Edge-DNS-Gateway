@@ -1,4 +1,6 @@
 import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 function assertInteger(value, name, min, max) {
   if (!Number.isInteger(value) || value < min || value > max) {
@@ -78,7 +80,7 @@ async function main() {
   process.stdout.write(`[PASS] ${JSON.stringify(result)}\n`);
 }
 
-if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   main().catch((error) => {
     process.stderr.write(`[DROP GUARD] ${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
