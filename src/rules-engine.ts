@@ -389,11 +389,21 @@ export class RuleSnapshotManager {
       }
       const parsed = parseManifest(await manifestObject.json());
 
-      if (this.active?.sha256 === parsed.sha256) {
+      const sameSnapshotLayout = this.active?.sha256 === parsed.sha256
+        && this.active.mode === parsed.mode
+        && (
+          parsed.mode === "legacy"
+          || JSON.stringify(this.active.shards ?? null) === JSON.stringify(parsed.shards ?? null)
+        );
+
+      if (sameSnapshotLayout) {
         this.pending = null;
       } else if (this.active === null) {
         this.active = parsed;
       } else {
+        // The monolithic compatibility binary and a sharded layout can share
+        // the same snapshot SHA. Compare layout metadata as well as content SHA
+        // so a dual-reader Worker can switch to shards after a same-SHA publish.
         this.pending = parsed;
       }
 
