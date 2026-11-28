@@ -370,10 +370,19 @@ test('same-SHA legacy-to-sharded manifest migration activates the shard layout',
     ].key),
     'same-SHA metadata change must load the selected shard rather than treating the manifest as unchanged',
   );
+  const monolithFetchesAfterAdoption = shardedBucket.gets.filter(
+    (key) => key === shardedBucket.manifest.key,
+  ).length;
   assert.equal(
-    shardedBucket.gets.includes(shardedBucket.manifest.key),
-    false,
-    'the dual-reader must stop loading the compatibility monolith after adopting shard metadata',
+    monolithFetchesAfterAdoption,
+    1,
+    'the in-flight request during background refresh may still use the legacy monolith once',
+  );
+  await manager.evaluate('ads.example.com', shardedBucket, ctx());
+  assert.equal(
+    shardedBucket.gets.filter((key) => key === shardedBucket.manifest.key).length,
+    monolithFetchesAfterAdoption,
+    'subsequent queries must stay on shards and stop fetching the legacy monolith',
   );
   assert.equal(manager.getHealth().status, 'ready');
 });
