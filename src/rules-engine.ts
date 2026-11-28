@@ -16,7 +16,7 @@ const REVALIDATE_MS = 5 * 60 * 1000;
 const ERROR_COOLDOWN_MS = 60 * 1000;
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 
-export type RuleDecision = "ALLOW" | "BLOCK" | "PASS";
+export type RuleDecision = "ALLOW" | "BLOCK" | "PASS" | "UNAVAILABLE";
 
 export interface RuleMatch {
   decision: Exclude<RuleDecision, "PASS">;
@@ -320,7 +320,9 @@ export class RuleSnapshotManager {
     }
 
     const candidate = this.pending ?? this.active;
-    if (!candidate) return "PASS";
+    // A configured R2 source that has no valid manifest is not an empty ruleset.
+    // Fail closed at the DNS layer so a cold isolate cannot silently bypass rules.
+    if (!candidate) return "UNAVAILABLE";
 
     try {
       const result = await this.evaluateSnapshot(candidate, qname, bucket);
@@ -350,7 +352,9 @@ export class RuleSnapshotManager {
             : this.lastError;
         }
       }
-      return "PASS";
+      // No verified previous snapshot is available. Returning PASS here would
+      // turn a missing/corrupt cold-start shard into a silent filtering bypass.
+      return "UNAVAILABLE";
     }
   }
 
