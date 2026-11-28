@@ -8,18 +8,13 @@ import {
 import { createHash } from "node:crypto";
 import { validateEdnsV1Buffer } from "../src/rules-binary-format.ts";
 
-export const LATEST_KEY = "compiled/latest.json";
-export const REVOKED_LIMIT = 5;
-const SHA_RE = /^[0-9a-f]{64}$/;
-
-function validateSha(sha) {
-  if (!SHA_RE.test(sha)) throw new Error(`Invalid SHA-256: ${sha}`);
-}
-function assertRules(rules, label) {
-  if (!Number.isInteger(rules) || rules < 0) throw new Error(`Invalid rule count in ${label}: ${rules}`);
-}
-function expectedKey(sha) { return `compiled/rules-${sha}.bin`; }
-function expectedStats(sha) { return `compiled/stats-${sha}.json`; }
+import {
+  LATEST_KEY,
+  REVOKED_LIMIT,
+  assertManifestInvariants,
+  validateSha,
+} from "./r2-manifest.mjs";
+export { LATEST_KEY, REVOKED_LIMIT, assertManifestInvariants } from "./r2-manifest.mjs";
 
 export function projectManifestFromHistory(history, revoked = [], publishedAt = new Date().toISOString()) {
   if (!Array.isArray(history) || history.length === 0) throw new Error("Cannot project manifest from empty history");
@@ -36,47 +31,6 @@ export function projectManifestFromHistory(history, revoked = [], publishedAt = 
     history: [...history],
     revoked: [...revoked],
   };
-}
-
-export function assertManifestInvariants(manifest, retentionLimit = 5) {
-  const fail = (message) => { throw new Error(`Manifest invariant failed: ${message}`); };
-  if (!manifest || typeof manifest !== "object" || manifest.format !== "EDNS-v1") fail("format must be EDNS-v1");
-  if (!Number.isSafeInteger(retentionLimit) || retentionLimit < 1) fail("invalid retentionLimit");
-  if (!SHA_RE.test(manifest.sha256)) fail("invalid top-level sha256");
-  if (manifest.key !== expectedKey(manifest.sha256)) fail("invalid top-level key");
-  if (manifest.stats !== expectedStats(manifest.sha256)) fail("invalid top-level stats");
-  assertRules(manifest.rules, "manifest");
-  if (typeof manifest.version !== "string" || !manifest.version) fail("version must be non-empty");
-  if (typeof manifest.generatedAt !== "string" || !manifest.generatedAt) fail("generatedAt must be non-empty");
-  if (!Array.isArray(manifest.history) || manifest.history.length < 1 || manifest.history.length > retentionLimit) fail(`history length must be within 1..${retentionLimit}`);
-  const historyShas = new Set();
-  for (let i = 0; i < manifest.history.length; i++) {
-    const e = manifest.history[i];
-    if (!e || !SHA_RE.test(e.sha256)) fail(`invalid history[${i}].sha256`);
-    if (historyShas.has(e.sha256)) fail(`duplicate history sha256 ${e.sha256}`);
-    if (e.key !== expectedKey(e.sha256)) fail(`invalid history[${i}].key`);
-    if (e.stats !== expectedStats(e.sha256)) fail(`invalid history[${i}].stats`);
-    assertRules(e.rules, `history[${i}]`);
-    if (typeof e.version !== "string" || !e.version) fail(`invalid history[${i}].version`);
-    if (typeof e.generatedAt !== "string" || !e.generatedAt) fail(`invalid history[${i}].generatedAt`);
-    historyShas.add(e.sha256);
-  }
-  const head = manifest.history[0];
-  for (const field of ["sha256", "key", "stats", "rules", "version", "generatedAt"]) {
-    if (manifest[field] !== head[field]) fail(`top-level ${field} does not match history[0]`);
-  }
-  const revoked = manifest.revoked ?? [];
-  if (!Array.isArray(revoked) || revoked.length > REVOKED_LIMIT) fail(`revoked must contain at most ${REVOKED_LIMIT} entries`);
-  const revokedShas = new Set();
-  for (let i = 0; i < revoked.length; i++) {
-    const r = revoked[i];
-    if (!r || !SHA_RE.test(r.sha256)) fail(`invalid revoked[${i}].sha256`);
-    if (revokedShas.has(r.sha256)) fail(`duplicate revoked sha256 ${r.sha256}`);
-    if (historyShas.has(r.sha256)) fail(`history and revoked intersect on ${r.sha256}`);
-    if (typeof r.revokedAt !== "string" || !r.revokedAt) fail(`invalid revoked[${i}].revokedAt`);
-    if (typeof r.reason !== "string" || !r.reason) fail(`invalid revoked[${i}].reason`);
-    revokedShas.add(r.sha256);
-  }
 }
 
 async function bodyString(body) { return body?.transformToString?.() ?? ""; }

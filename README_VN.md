@@ -166,6 +166,10 @@ Thiết bị ──DoH──▶ Cloudflare Worker (Lớp 1: quảng cáo/trackin
 
 ---
 
+## 🔒 Kiểm chứng production chỉ-đọc
+
+Trước khi mở khóa release, dùng workflow thủ công `Production Read-only Exit Gate` và làm theo [runbook Production Read-Only Exit Gate](docs/PRODUCTION_READONLY_EXIT_GATE.md). Gate đối chiếu version Worker production, CPU/errors, DNS smoke, SHA/rule-count/byte-size của R2 và toàn bộ history. Cần tạo credential riêng chỉ có quyền đọc; tuyệt đối không dùng R2 publisher key. Gate không deploy Worker, không ghi R2 và không thay đổi Pages.
+
 ## 🧪 Phát triển & kiểm thử
 
 Tầng DNS trong `src/index.ts` là parser và serializer wire-format viết tay, với bộ test chạy trực tiếp trên Worker runtime. Node 24 và các script trong `package.json` được dùng để kiểm tra cục bộ:

@@ -1,0 +1,55 @@
+name: Production Read-only Exit Gate
+
+on:
+  # Manual only: this workflow performs bounded reads and DNS queries.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-readonly-exit-gate
+  cancel-in-progress: false
+
+jobs:
+  production-readonly-gate:
+    name: Verify frozen production baseline (read-only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - name: Install pinned dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Verify deployed Worker version and CPU/error metrics
+        env:
+          CLOUDFLARE_READONLY_API_TOKEN: ${{ secrets.CLOUDFLARE_READONLY_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PRODUCTION_WORKER_NAME: serverless-edge-dns-gateway
+          EXPECTED_WORKER_VERSION_ID: 456608ef-0dbc-4acb-86a8-39aaeea01400
+        run: node scripts/production-worker-deployment-gate.mjs
+
+      - name: Run production DoH DNS smoke probe
+        env:
+          PRODUCTION_DOH_URL: ${{ secrets.PRODUCTION_DOH_URL }}
+        run: node scripts/production-worker-smoke.mjs
+
+      - name: Verify Production R2 manifest and all retained artifacts
+        env:
+          R2_READONLY_ENDPOINT: ${{ secrets.R2_READONLY_ENDPOINT }}
+          R2_READONLY_ACCESS_KEY_ID: ${{ secrets.R2_READONLY_ACCESS_KEY_ID }}
+          R2_READONLY_SECRET_ACCESS_KEY: ${{ secrets.R2_READONLY_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: dns-compiled-rules
+          R2_RETENTION_LIMIT: '5'
+          EXPECTED_R2_SHA256_PREFIX: 2b1bea6d
+          EXPECTED_R2_RULE_COUNT: '366391'
+          EXPECTED_R2_BINARY_BYTES: '8785954'
+        run: node --experimental-strip-types scripts/verify-r2-state-readonly.mjs
