@@ -306,10 +306,24 @@ test('a corrupt replacement shard keeps the previous verified snapshot active', 
   corrupt[corrupt.length - 1] ^= 0xff;
   manager.nextCheckAt = 0;
 
+  const refreshTasks = [];
+  const refreshContext = {
+    waitUntil(promise) {
+      refreshTasks.push(promise);
+    },
+  };
+  assert.equal(
+    await manager.evaluate('ads.example.com', replacement, refreshContext),
+    'BLOCK',
+    'the currently active snapshot remains usable while the replacement manifest loads',
+  );
+  assert.equal(refreshTasks.length, 1);
+  await Promise.all(refreshTasks);
+
   assert.equal(
     await manager.evaluate('ads.example.com', replacement, ctx()),
     'BLOCK',
-    'failed replacement must fall back to the previous verified rule table',
+    'a corrupt replacement shard must fall back to the previous verified rule table',
   );
   assert.equal(manager.getLoadedVersion(), oldVersion);
   assert.equal(manager.getHealth().status, 'stale');
