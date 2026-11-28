@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../src/index.ts';
+import { shardIdForRuleDomain } from '../src/rules-sharding.ts';
+import { RuleSnapshotManager } from '../src/rules-engine.ts';
 import { query, response, record, counts, rcodeOf } from './helpers.mjs';
 
 function buildRuleBinary(entries) {
@@ -42,6 +44,87 @@ async function makeBucket(entries) {
   ]);
   return {
     get: async (requestedKey) => objects.get(requestedKey) ?? null
+  };
+}
+
+async function makeShardedBucket(entries) {
+  const monolith = buildRuleBinary(entries);
+  const monolithBytes = Buffer.from(monolith);
+  const monolithSha = Buffer.from(
+    await crypto.subtle.digest('SHA-256', monolithBytes)
+  ).toString('hex');
+  const groups = new Map();
+  const globalEntries = [];
+
+  for (const entry of entries) {
+    const shardId = shardIdForRuleDomain(entry[0]);
+    if (shardId === 'global') globalEntries.push(entry);
+    else {
+      const group = groups.get(shardId) ?? [];
+      group.push(entry);
+      groups.set(shardId, group);
+    }
+  }
+
+  const objects = new Map();
+  const metadata = {
+    format: 'EDNS-v1-sharded',
+    algorithm: 'fnv1a32-last-two-labels-v1',
+    shardCount: 256,
+    global: null,
+    entries: {}
+  };
+
+  const add = async (id, shardEntries) => {
+    const buffer = buildRuleBinary(shardEntries);
+    const bytes = Buffer.from(buffer);
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    const sha256 = Buffer.from(digest).toString('hex');
+    const key = `compiled/shards/${monolithSha}/${id}-${sha256}.bin`;
+    const descriptor = {
+      key,
+      sha256,
+      rules: shardEntries.length,
+      binaryBytes: bytes.byteLength
+    };
+    objects.set(key, bytes);
+    if (id === 'global') metadata.global = descriptor;
+    else metadata.entries[id] = descriptor;
+  };
+
+  if (globalEntries.length) await add('global', globalEntries);
+  for (const [id, shardEntries] of groups) await add(id, shardEntries);
+
+  objects.set(`compiled/rules-${monolithSha}.bin`, monolithBytes);
+  const manifest = {
+    version: monolithSha,
+    sha256: monolithSha,
+    key: `compiled/rules-${monolithSha}.bin`,
+    rules: entries.length,
+    generatedAt: '2026-11-28T00:00:00.000Z',
+    shards: metadata
+  };
+  objects.set('compiled/latest.json', manifest);
+
+  const gets = [];
+  return {
+    objects,
+    gets,
+    manifest,
+    get: async (requestedKey) => {
+      gets.push(requestedKey);
+      if (requestedKey === 'compiled/latest.json') {
+        return { json: async () => manifest };
+      }
+      const value = objects.get(requestedKey);
+      if (!value) return null;
+      return {
+        arrayBuffer: async () => value.buffer.slice(
+          value.byteOffset,
+          value.byteOffset + value.byteLength
+        )
+      };
+    }
   };
 }
 
@@ -159,4 +242,78 @@ test('debug exposes degraded R2 snapshot health when the manifest is invalid', a
   assert.equal(body.r2Snapshot.active, false);
   assert.equal(body.r2Snapshot.ruleCount, 0);
   assert.equal(body.r2Snapshot.error, 'Invalid latest.json schema');
+});
+
+
+test('sharded Worker loads only the global table and the query-selected shard', async () => {
+  const worker = (await import(`../src/index.ts?sharded-runtime=${Date.now()}-${Math.random()}`)).default;
+  const bucket = await makeShardedBucket([
+    ['com', 'BLOCK'],
+    ['example.com', 'BLOCK'],
+    ['ads.example.com', 'ALLOW'],
+    ['tracker.ads.example.com', 'BLOCK'],
+    ['other.net', 'BLOCK']
+  ]);
+  globalThis.fetch = async () => new Response(
+    response({ answers: [record({ ttl: 60, rdata: [93, 184, 216, 34] })] }),
+    { status: 200 }
+  );
+
+  const send = async (name) => worker.fetch(
+    new Request('https://dns.example.workers.dev/dns-query', {
+      method: 'POST',
+      body: query({ questions: [{ name, type: 1 }] }),
+      headers: { 'CF-Connecting-IP': '203.0.113.9' }
+    }),
+    { RULES_BUCKET: bucket },
+    ctx()
+  );
+
+  const deepBlocked = await send('tracker.ads.example.com');
+  assert.equal(deepBlocked.headers.get('x-blocked'), 'tracker.ads.example.com');
+  const allowed = await send('img.ads.example.com');
+  assert.equal(allowed.headers.get('x-blocked'), null);
+  const apexBlocked = await send('www.example.com');
+  assert.equal(apexBlocked.headers.get('x-blocked'), 'example.com');
+  const unrelated = await send('unrelated.test');
+  assert.equal(unrelated.headers.get('x-blocked'), null);
+
+  const fetchedKeys = new Set(bucket.gets);
+  assert.ok(fetchedKeys.has('compiled/latest.json'));
+  assert.ok(fetchedKeys.has(bucket.manifest.shards.global.key));
+  const selectedShardIds = new Set([
+    shardIdForRuleDomain('example.com'),
+    shardIdForRuleDomain('other.net')
+  ]);
+  for (const id of selectedShardIds) {
+    const descriptor = bucket.manifest.shards.entries[id];
+    if (descriptor) assert.ok(fetchedKeys.has(descriptor.key));
+  }
+  assert.equal(
+    [...fetchedKeys].filter((key) => key === bucket.manifest.key).length,
+    0,
+    'new runtime must not fetch the full compatibility binary',
+  );
+});
+
+test('a corrupt replacement shard keeps the previous verified snapshot active', async () => {
+  const manager = new RuleSnapshotManager();
+  const oldBucket = await makeBucket([['ads.example.com', 'BLOCK']]);
+  assert.equal(await manager.evaluate('ads.example.com', oldBucket, ctx()), 'BLOCK');
+  const oldVersion = manager.getLoadedVersion();
+
+  const replacement = await makeShardedBucket([['ads.example.com', 'ALLOW']]);
+  const shardId = shardIdForRuleDomain('ads.example.com');
+  const shard = replacement.manifest.shards.entries[shardId];
+  const corrupt = replacement.objects.get(shard.key);
+  corrupt[corrupt.length - 1] ^= 0xff;
+  manager.nextCheckAt = 0;
+
+  assert.equal(
+    await manager.evaluate('ads.example.com', replacement, ctx()),
+    'BLOCK',
+    'failed replacement must fall back to the previous verified rule table',
+  );
+  assert.equal(manager.getLoadedVersion(), oldVersion);
+  assert.equal(manager.getHealth().status, 'stale');
 });
