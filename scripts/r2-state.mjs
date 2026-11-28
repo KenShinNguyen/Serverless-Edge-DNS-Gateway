@@ -86,15 +86,39 @@ async function verifyShardSet(s3, bucket, snapshot) {
   return { shardObjects: descriptors.length, shardBinaryBytes };
 }
 async function pruneUnpinned(s3, bucket, pinned) {
-  const response = await s3.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: "compiled/", MaxKeys: 1000 }));
-  const objects = (response.Contents ?? []).map((x) => x.Key).filter(Boolean).filter((key) => {
-    const m = /^compiled\/(?:rules|stats)-([0-9a-f]{64})\.(?:bin|json)$/.exec(key);
-    return m && !pinned.has(m[1]);
+  const keys = [];
+  let ContinuationToken;
+  do {
+    const response = await s3.send(new ListObjectsV2Command({
+      Bucket: bucket,
+      Prefix: "compiled/",
+      ContinuationToken,
+      MaxKeys: 1000,
+    }));
+    keys.push(...(response.Contents ?? []).map((item) => item.Key).filter(Boolean));
+    ContinuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+  } while (ContinuationToken);
+
+  const objects = keys.filter((key) => {
+    const immutableMatch = /^compiled\\/(?:rules|stats)-([0-9a-f]{64})\\.(?:bin|json)$/.exec(key);
+    const shardMatch = /^compiled\\/shards\\/([0-9a-f]{64})\\//.exec(key);
+    const snapshotSha = immutableMatch?.[1] ?? shardMatch?.[1];
+    return snapshotSha && !pinned.has(snapshotSha);
   }).map((Key) => ({ Key }));
   if (!objects.length) return 0;
-  await s3.send(new DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: objects, Quiet: true } }));
-  return objects.length;
+
+  let deleted = 0;
+  for (let offset = 0; offset < objects.length; offset += 1000) {
+    const batch = objects.slice(offset, offset + 1000);
+    await s3.send(new DeleteObjectsCommand({
+      Bucket: bucket,
+      Delete: { Objects: batch, Quiet: true },
+    }));
+    deleted += batch.length;
+  }
+  return deleted;
 }
+
 function audit() {
   return { actor: process.env.GITHUB_ACTOR || process.env.USER || "unknown", runId: process.env.GITHUB_RUN_ID || "local", runAttempt: process.env.GITHUB_RUN_ATTEMPT || "1", eventName: process.env.GITHUB_EVENT_NAME || "manual" };
 }
