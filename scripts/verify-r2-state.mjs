@@ -5,7 +5,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { createHash } from "node:crypto";
 import { validateEdnsV1Buffer } from "../src/rules-binary-format.ts";
-import { assertManifestInvariants, LATEST_KEY } from "./r2-state.mjs";
+import { assertManifestInvariants, LATEST_KEY } from "./r2-manifest.mjs";
 
 function resolveRetentionLimit(raw = process.env.RETENTION_LIMIT) {
   if (raw === undefined || raw === "") return 5;
