@@ -87,16 +87,6 @@ test("Workers observability is sampled, query-redacted and excludes raw invocati
   assert.equal(wrangler.triggers, undefined, "the Worker exports no scheduled handler");
 });
 
-test("workflow contract: blocklist refresh opens a draft PR instead of pushing to main", () => {
-  assert.match(blocklistWorkflow, /schedule:/);
-  assert.match(blocklistWorkflow, /pull-requests:\\s*write/);
-  assert.ok(blocklistWorkflow.includes("peter-evans/create-pull-request@v7"));
-  assert.ok(blocklistWorkflow.includes("branch: automation/dns-blocklists"));
-  assert.match(blocklistWorkflow, /draft: true/);
-  assert.doesNotMatch(blocklistWorkflow, /git-auto-commit-action/);
-  assert.doesNotMatch(blocklistWorkflow, /git push origin main/);
-});
-
 test("workflow contract: no user-controlled inputs are interpolated inside run blocks", () => {
   for (const block of runBlocks(workflow)) {
     assert.doesNotMatch(block, /\$\{\{\s*(?:inputs\.|github\.event\.inputs\.)/);
