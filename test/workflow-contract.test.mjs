@@ -5,10 +5,12 @@ import { test } from "node:test";
 
 const root = resolve(import.meta.dirname, "..");
 const workflowPath = resolve(root, ".github/workflows/publish-rules-r2.yml");
+const blocklistWorkflowPath = resolve(root, ".github/workflows/Update_DNS_Blocklists.yml");
 const publishPath = resolve(root, "scripts/publish-r2.mjs");
 const verifyPath = resolve(root, "scripts/verify-r2-state.mjs");
 
 const workflow = await readFile(workflowPath, "utf8");
+const blocklistWorkflow = await readFile(blocklistWorkflowPath, "utf8");
 const publish = await readFile(publishPath, "utf8");
 const verify = await readFile(verifyPath, "utf8");
 
@@ -53,11 +55,23 @@ test("workflow contract: concurrency and least-privilege permissions are locked"
   assert.doesNotMatch(workflow, /contents:\s*write/);
 });
 
-test("workflow contract: schedule normalizes to publish and dispatch has an explicit action set", () => {
-  assert.match(workflow, /EVENT_NAME: \$\{\{ github\.event_name \}\}/);
-  assert.match(workflow, /INPUT_ACTION: \$\{\{ inputs\.action \}\}/);
-  assert.match(workflow, /if \[ \"\$EVENT_NAME\" = \"schedule\" \]; then[\s\S]*EFFECTIVE=\"publish\"/);
-  assert.match(workflow, /publish\|dry-run\|rollback\|unrevoke\|verify/);
+test("workflow contract: R2 publisher is manual-only and defaults to dry-run", () => {
+  assert.doesNotMatch(workflow, /schedule:/);
+  assert.match(workflow, /workflow_dispatch:/);
+  assert.match(workflow, /default: \\"dry-run\\"/);
+  assert.match(workflow, /INPUT_ACTION: \\$\\{\\{ inputs\\.action \\}\\}/);
+  assert.match(workflow, /EFFECTIVE=\\"dry-run\\"/);
+  assert.match(workflow, /publish\\|dry-run\\|rollback\\|unrevoke\\|verify/);
+});
+
+test("workflow contract: blocklist refresh opens a draft PR instead of pushing to main", () => {
+  assert.match(blocklistWorkflow, /schedule:/);
+  assert.match(blocklistWorkflow, /pull-requests:\\s*write/);
+  assert.match(blocklistWorkflow, /peter-evans\\/create-pull-request@v7/);
+  assert.match(blocklistWorkflow, /branch: automation\\/dns-blocklists/);
+  assert.match(blocklistWorkflow, /draft: true/);
+  assert.doesNotMatch(blocklistWorkflow, /git-auto-commit-action/);
+  assert.doesNotMatch(blocklistWorkflow, /git push origin main/);
 });
 
 test("workflow contract: no user-controlled inputs are interpolated inside run blocks", () => {
