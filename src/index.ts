@@ -94,7 +94,7 @@ const GEO_BYPASS_ENABLED = true;
 // /debug endpoint — enable via env DEBUG_ENABLED=true only when needed
 let DEBUG_ENABLED = false;
 
-// Apply per-deployment overrides from Pages environment variables (once per isolate)
+// Apply per-deployment overrides from Workers environment variables (once per isolate)
 let envApplied = false;
 function applyEnvConfig(env) {
   if (envApplied || !env) return;
@@ -249,7 +249,7 @@ async function fetchList(url) {
 }
 
 async function refreshBlocklists(baseUrl) {
-  // Large text blocklists are a Pages/local fallback only. Static private-TLD,
+  // Large text blocklists are a local fallback only. Static private-TLD,
   // redirect and geo-bypass rules are bundled in the Worker and never fetched
   // from /rules/*.txt assets.
   if (blocklistsFetched && Date.now() - blocklistLastFetch < ALL_LISTS_REFRESH_INTERVAL) return;
