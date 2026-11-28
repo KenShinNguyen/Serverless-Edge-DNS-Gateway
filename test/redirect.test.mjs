@@ -80,3 +80,55 @@ test('buildRedirectResponse returns the upstream message untouched for a stub in
   const upstream = new Uint8Array([1, 2, 3]).buffer;
   assert.equal(w.buildRedirectResponse(query(), upstream, 'b.example'), upstream);
 });
+
+
+test('buildRedirectResponse preserves a multi-hop CNAME chain with compression pointers', () => {
+  const original = query({ id: 0x0042, questions: [{ name: 'www.bilibili.tv', type: 1 }] });
+  const qname = encodeName('www.bilibili.tv.w.cdngslb.com');
+  const edgeName = encodeName('edge.cdn.example');
+  const cdnName = encodeName('cdn.example');
+  const bytes = [
+    ...u16(0x0042), ...u16(0x8180),
+    ...u16(1), ...u16(3), ...u16(0), ...u16(0),
+    ...qname, ...u16(1), ...u16(1),
+  ];
+
+  const answer1OwnerOffset = bytes.length;
+  bytes.push(0xc0, 0x0c, ...u16(5), ...u16(1), ...u32(60), ...u16(edgeName.length), ...edgeName);
+
+  const answer2OwnerOffset = bytes.length;
+  bytes.push(0xc0, edgeNameOffset(answer1OwnerOffset, edgeName.length), ...u16(5), ...u16(1), ...u32(60), ...u16(cdnName.length), ...cdnName);
+
+  const answer3OwnerOffset = bytes.length;
+  bytes.push(0xc0, edgeNameOffset(answer2OwnerOffset, cdnName.length), ...u16(1), ...u16(1), ...u32(60), ...u16(4), 1, 2, 3, 4);
+
+  function edgeNameOffset(ownerOffset, ownerRdataLength) {
+    // The first answer's RDATA starts 12 bytes after its owner offset.
+    // The second answer's RDATA likewise starts 12 bytes after its owner offset.
+    return ownerOffset + 12;
+  }
+
+  const upstream = new Uint8Array(bytes).buffer;
+  const out = w.buildRedirectResponse(original, upstream, 'www.bilibili.tv.w.cdngslb.com');
+  const v = new Uint8Array(out);
+
+  assert.deepEqual(counts(out), { qd: 1, an: 4, ns: 0, ar: 0 });
+
+  let off = w.skipQuestions(v, 1);
+  assert.equal(w.decodeName(v, off).name, 'www.bilibili.tv');
+  off = w.decodeName(v, off).nextOff;
+  assert.equal((v[off] << 8) | v[off + 1], 5);
+  assert.equal(w.decodeName(v, off + 10).name, 'www.bilibili.tv.w.cdngslb.com');
+
+  off += 10 + ((v[off + 8] << 8) | v[off + 9]);
+  assert.equal(w.decodeName(v, off).name, 'edge.cdn.example');
+  off = w.decodeName(v, off).nextOff;
+  assert.equal((v[off] << 8) | v[off + 1], 5);
+  assert.equal(w.decodeName(v, off + 10).name, 'cdn.example');
+
+  off += 10 + ((v[off + 8] << 8) | v[off + 9]);
+  assert.equal(w.decodeName(v, off).name, 'cdn.example');
+  off = w.decodeName(v, off).nextOff;
+  assert.equal((v[off] << 8) | v[off + 1], 1);
+  assert.deepEqual(Array.from(v.subarray(off + 10, off + 14)), [1, 2, 3, 4]);
+});
