@@ -59,14 +59,14 @@ export function verifyDnsProbeResponse(responseBytes, queryBytes) {
   return { rcode, questionCount, answerCount };
 }
 
-function requiredEnv(name) {
-  const value = process.env[name];
+function requiredEnv(name, env = process.env) {
+  const value = env[name];
   if (!value) throw new Error(`Missing required environment variable: ${name}`);
   return value;
 }
 
-export async function runProductionWorkerSmoke(env = process.env) {
-  const endpoint = new URL(requiredEnv("PRODUCTION_DOH_URL"));
+export function validateProductionDohUrl(raw) {
+  const endpoint = new URL(raw);
   if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
     throw new Error("PRODUCTION_DOH_URL must be an HTTPS URL without credentials, query string, or fragment");
   }
@@ -74,6 +74,11 @@ export async function runProductionWorkerSmoke(env = process.env) {
   if (segments[0] !== "dns-query" || segments.length > 2) {
     throw new Error("PRODUCTION_DOH_URL must target /dns-query, optionally followed by its access-token segment");
   }
+  return endpoint;
+}
+
+export async function runProductionWorkerSmoke(env = process.env) {
+  const endpoint = validateProductionDohUrl(requiredEnv("PRODUCTION_DOH_URL", env));
 
   const query = buildDnsProbeQuery(randomInt(0, 0x10000), "example.com");
   const startedAt = Date.now();
