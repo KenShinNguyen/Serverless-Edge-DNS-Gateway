@@ -293,6 +293,22 @@ test('sharded Worker loads only the global table and the query-selected shard', 
   );
 });
 
+
+test('valid sharded manifest remains authoritative when the QNAME has no stored shard', async () => {
+  const manager = new RuleSnapshotManager();
+  const bucket = await makeShardedBucket([['ads.example.com', 'BLOCK']]);
+
+  assert.equal(await manager.evaluate('unrelated.test', bucket, ctx()), 'PASS');
+  assert.equal(manager.getHealth().status, 'ready');
+  assert.equal(manager.getHealth().active, true);
+  assert.equal(manager.getHealth().loadedShardCount, 0);
+  assert.equal(
+    bucket.gets.filter((key) => key !== 'compiled/latest.json').length,
+    0,
+    'an absent shard descriptor is a valid empty result and must not trigger an R2 fetch',
+  );
+});
+
 test('a corrupt replacement shard keeps the previous verified snapshot active', async () => {
   const manager = new RuleSnapshotManager();
   const oldBucket = await makeBucket([['ads.example.com', 'BLOCK']]);
