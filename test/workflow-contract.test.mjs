@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { test } from "node:test";
+import { resolveVerificationBucketName } from "../scripts/verify-r2-state.mjs";
+import { runReadOnlyR2Gate } from "../scripts/verify-r2-state-readonly.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const workflowPath = resolve(root, ".github/workflows/publish-rules-r2.yml");
@@ -13,6 +15,9 @@ const readonlyVerifyPath = resolve(root, "scripts/verify-r2-state-readonly.mjs")
 const wranglerPath = resolve(root, "wrangler.jsonc");
 
 const workflow = await readFile(workflowPath, "utf8");
+const stagingBootstrap = await readFile(resolve(root, "docs/STAGING_BOOTSTRAP.md"), "utf8");
+const englishReadme = await readFile(resolve(root, "README.md"), "utf8");
+const vietnameseReadme = await readFile(resolve(root, "README_VN.md"), "utf8");
 const ciWorkflow = await readFile(ciPath, "utf8");
 const blocklistWorkflow = await readFile(blocklistWorkflowPath, "utf8");
 const publish = await readFile(publishPath, "utf8");
@@ -52,6 +57,38 @@ function stepBlock(source, stepName) {
   assert.ok(match, `workflow step not found: ${stepName}`);
   return match[0];
 }
+
+test("R2 publisher and verifiers refuse an implicit bucket target", async () => {
+  assert.equal(resolveBucketName("dns-compiled-rules-staging"), "dns-compiled-rules-staging");
+  assert.throws(() => resolveBucketName(""), /R2_BUCKET_NAME is required/);
+  assert.throws(() => resolveVerificationBucketName(""), /R2_BUCKET_NAME is required/);
+  assert.throws(
+    () => runReadOnlyR2Gate({
+      R2_READONLY_ENDPOINT: "https://example.r2.cloudflarestorage.com",
+      R2_READONLY_ACCESS_KEY_ID: "test-access-key",
+      R2_READONLY_SECRET_ACCESS_KEY: "test-secret",
+    }),
+    /Missing required environment variable: R2_BUCKET_NAME/,
+  );
+  assert.doesNotMatch(publish, /R2_BUCKET_NAME\s*\|\|\s*DEFAULT_BUCKET/);
+  assert.doesNotMatch(verify, /R2_BUCKET_NAME\s*\|\|\s*["']dns-compiled-rules["']/);
+  assert.doesNotMatch(readonlyVerify, /R2_BUCKET_NAME\s*\|\|\s*["']dns-compiled-rules["']/);
+});
+
+test("staging bootstrap documentation keeps the first snapshot isolated from production", () => {
+  assert.match(stagingBootstrap, /R2_BUCKET_NAME="dns-compiled-rules-staging"/);
+  assert.match(stagingBootstrap, /publish-r2\.mjs --dry-run/);
+  assert.match(stagingBootstrap, /wrangler\.staging\.jsonc/);
+  assert.match(stagingBootstrap, /SERVFAIL/);
+  assert.match(stagingBootstrap, /10 ms/);
+  assert.match(stagingBootstrap, /80%/);
+  assert.match(englishReadme, /docs\/STAGING_BOOTSTRAP\.md/);
+  assert.match(vietnameseReadme, /docs\/STAGING_BOOTSTRAP\.md/);
+  assert.doesNotMatch(englishReadme, /Mullvad DNS/);
+  assert.doesNotMatch(vietnameseReadme, /Mullvad DNS/);
+  assert.match(englishReadme, /dns10\.quad9\.net/);
+  assert.match(vietnameseReadme, /dns10\.quad9\.net/);
+});
 
 test("workflow contract: concurrency and least-privilege permissions are locked", () => {
   assert.match(workflow, /concurrency:\s*[\s\S]*?group:\s*r2-compiled-rules-publisher/);
