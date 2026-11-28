@@ -13,20 +13,43 @@ The workflow performs only these operations:
 | Surface | Operation | Acceptance |
 |---|---|---|
 | Worker deployments API | HTTP GET | The first/latest production deployment serves version `456608ef-0dbc-4acb-86a8-39aaeea01400` at 100% |
-| Workers Analytics GraphQL | Read-only GraphQL query | At least 100 requests in the measurement window, zero invocation errors, whole-window CPU P50 ≤ 20 ms and P99 ≤ 50 ms, plus maximum per-bucket CPU P99 ≤ 50 ms |
+| Workers Analytics GraphQL | Read-only GraphQL query | At least 100 requests in the measurement window, zero invocation errors, maximum adequately sampled minute-bucket CPU P50 ≤ 20 ms and maximum minute-bucket CPU P99 ≤ 50 ms |
 | Production DoH endpoint | One DNS-over-HTTPS POST query for `example.com A` | HTTP 200, `application/dns-message`, matching transaction ID/question, RCODE 0 and at least one answer |
 | Production R2 | S3 `GetObject` and `HeadObject` only | Active manifest, binary SHA-256, rule count, byte length, active stats and every retained binary/stat object validate |
 
-The CPU window is the 60 minutes ending 10 minutes before the workflow starts. The metrics query deliberately obtains two views of that same window:
+The CPU window is the 60 minutes ending 10 minutes before the workflow starts. The Workers Analytics query groups records by **`datetimeMinute`**, not exact `datetime` (second-level timestamps). This produces one-minute buckets rather than allowing a one-request second bucket to define a P50.
 
-1. **Whole-window aggregate quantiles** (`limit: 1`, without a `dimensions` selection): the primary CPU acceptance uses aggregate `cpuTimeP50` ≤ 20 ms and aggregate `cpuTimeP99` ≤ 50 ms. This avoids treating a one-request time bucket's P50 as the P50 of the full sample.
-2. **Per-time-bucket diagnostics** (`limit: 1000`, grouped by `datetime`, `scriptName` and `status`): the gate retains the maximum bucket CPU P99 ≤ 50 ms as an independent tail guard. It reports the maximum bucket P50, the count of buckets whose P50 exceeds 20 ms, and the number of requests contained in those buckets. Bucket P50 outliers are diagnostic; they are not an independent blocker when the whole-window P50 passes.
+### CPU metrics and units
 
-The request and error totals in the bucket view must exactly match the whole-window totals. The detailed view fails closed when it returns **1,000 rows**, because reaching the configured row cap means completeness cannot be proven. It also fails if any required metric is missing or non-numeric. This prevents a truncated or partial bucket response from silently passing.
+The gate queries `cpuTimeP50` and `cpuTimeP99`. Cloudflare returns these CPU quantiles in **microseconds**. The script explicitly converts each value to milliseconds before comparing with the thresholds:
 
-**This is an explicit acceptance-criteria change from the original Phase 3D implementation.** The thresholds remain 20 ms / 50 ms, but the P50/P99 population is now the full measurement window; the maximum per-bucket P99 remains as a separate tail guard. This is not a retrospective PASS for earlier evidence. Production evidence must be collected from a fresh measurement window after this change is merged; do not reuse the earlier 260-request probe to certify the revised gate.
+```text
+cpuTime* (microseconds) / 1000 = CPU time (milliseconds)
+```
 
-Cloudflare's [Workers for Platforms observability example](https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/configuration/observability/) demonstrates querying a Worker with `workersInvocationsAdaptive(limit: 1)`, selecting sums and CPU quantiles without dimensions. The standard [Querying Workers Metrics with GraphQL tutorial](https://developers.cloudflare.com/analytics/graphql-api/tutorials/querying-workers-metrics/) demonstrates the time-dimension detail view. Cloudflare also notes that metrics can lag near the newest end of a time window.
+The gate does **not** query `durationP50`. Duration is wall-clock time and includes waiting; it is not CPU time and must not be compared with CPU thresholds. Keep these units distinct in any manual analysis.
+
+### Acceptance rules
+
+- At least **100 requests** and exactly **0 invocation errors** across the selected measurement window.
+- For P50, a minute bucket is considered adequately sampled only when it contains at least **20 requests**. The maximum CPU P50 across those qualified minute buckets must be **≤ 20 ms**. At least one qualified minute bucket must exist; otherwise the gate fails because P50 has not been meaningfully evaluated.
+- Minute buckets with fewer than 20 requests remain visible in diagnostics. Their P50 values, including values above 20 ms, are informational and do not independently fail the P50 criterion. This avoids treating the P50 of a single cold-start request as a stable minute-level median.
+- The maximum CPU P99 across **all** minute buckets, including low-volume buckets, must be **≤ 50 ms**. This preserves a separate tail guard so a low-sample cold-start outlier is not simply discarded.
+- The report includes bucket count, qualified/low-sample bucket counts, maximum P50 across qualified buckets, maximum P50 across all buckets, maximum P99 across all buckets, and the number of P50-hot buckets / requests they contain.
+- The GraphQL query uses a **1,000-row cap** and does not expose pagination for this result. If exactly 1,000 rows are returned, the gate fails closed because completeness cannot be proven.
+- Missing, null, negative, or non-numeric request/error/CPU metrics fail closed.
+
+**This is an explicit acceptance-criteria change from the original Phase 3D implementation.** The numeric thresholds remain 20 ms P50 and 50 ms P99, but the grouping resolution and P50 sample qualification are now explicit: one-minute buckets, at least 20 requests for a bucket's P50 to be judged, and a P99 tail guard over every bucket. The earlier 260-request second-bucket evidence is not a certification of this revised gate. Collect a fresh measurement window after this PR is merged.
+
+Cloudflare's [Workers Metrics GraphQL tutorial](https://developers.cloudflare.com/analytics/graphql-api/tutorials/querying-workers-metrics/) documents the `workersInvocationsAdaptive` dataset and its `cpuTimeP50` / `cpuTimeP99` fields. Cloudflare's GraphQL time dimensions include minute-level time bucketing; this gate explicitly selects `datetimeMinute`. The query's row limit is treated as a hard completeness boundary, not as a pageable result.
+
+## Workers plan and CPU entitlement
+
+The Gate's 20 ms / 50 ms values are observability acceptance thresholds; they are **not** the account's CPU execution limit.
+
+Cloudflare currently documents a **10 ms CPU limit per request on Workers Free** and a default **30-second CPU limit per request on Workers Paid (Standard)**, configurable up to five minutes. Cloudflare also documents built-in flexibility for infrequent requests that exceed the configured CPU limit; repeated overruns are terminated, and Free-plan CPU exhaustion is surfaced as Error 1102 / `exceededCpu`. Therefore, a rare successful invocation above 10 ms is not sufficient proof that the account is on Paid. Confirm the actual Workers plan and Worker's configured CPU limit in Cloudflare Dashboard → **Workers & Pages → Plans / Worker Settings** before release.
+
+See [Cloudflare Workers limits](https://developers.cloudflare.com/workers/platform/limits/) and [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/).
 
 ## Required GitHub secrets
 
@@ -44,12 +67,6 @@ Create these secrets before running the workflow. The workflow intentionally doe
 **Do not reuse** `R2_ACCESS_KEY_ID` or `R2_SECRET_ACCESS_KEY` from the publisher. Create a separate R2 credential limited to **Object Read** for the single production bucket. The verifier code imports only `GetObjectCommand` and `HeadObjectCommand`, and the workflow passes only the dedicated `R2_READONLY_*` secrets.
 
 Cloudflare documents [Workers Metadata Read-Only](https://developers.cloudflare.com/workers/authorization/workers/) as sufficient for both [listing Worker deployments](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/deployments/methods/list/) and using `wrangler tail`. The [Workers Analytics GraphQL query](https://developers.cloudflare.com/analytics/graphql-api/tutorials/querying-workers-metrics/) additionally requires `Account Analytics Read`. No Workers Editor, Workers Scripts Write, R2 Object Write, or account administration permission is needed.
-
-## CPU budget and account plan
-
-The Gate's 20 ms / 50 ms values are observability acceptance thresholds; they are not a statement of the account's Workers CPU entitlement. Confirm the account's Workers plan and this Worker's configured CPU limit in Cloudflare Dashboard before release. Cloudflare currently documents a 10 ms per-request CPU limit on Workers Free and a 30-second default (configurable) on Workers Paid. Cloudflare also documents that infrequent requests can exceed a configured CPU limit through runtime rollover without necessarily generating an invocation error. Therefore, a high CPU quantile with zero errors still warrants investigation; it must not be described as proof that the Worker is safely within the account's plan limit.
-
-See [Cloudflare Workers limits](https://developers.cloudflare.com/workers/platform/limits/) and [Workers CPU metrics](https://developers.cloudflare.com/workers/observability/metrics-and-analytics/).
 
 ## Manual runtime evidence: Wrangler tail
 
@@ -88,15 +105,17 @@ The revised gate is **PASS** only when:
 - The manual workflow completes with all three checks green.
 - The frozen Worker version is still serving 100% of traffic.
 - DNS smoke returns a valid A answer.
-- Whole-window CPU P50 ≤ 20 ms and P99 ≤ 50 ms with at least 100 requests sampled and zero invocation errors.
-- Maximum per-bucket CPU P99 ≤ 50 ms.
-- Detailed bucket rows are complete (fewer than 1,000 rows) and their request/error totals match the whole-window aggregate totals.
-- The report includes bucket count, maximum bucket P50, number of buckets with P50 > 20 ms and requests in those buckets.
+- At least 100 requests and zero invocation errors are recorded in the selected window.
+- At least one adequately sampled minute bucket exists (20 or more requests), and maximum qualified-minute CPU P50 ≤ 20 ms.
+- Maximum minute-bucket CPU P99 across every bucket ≤ 50 ms.
+- Detailed minute buckets are fewer than 1,000 rows; no metric is missing or malformed.
+- The report includes the required minute-bucket and P50 outlier diagnostics.
+- The Workers plan and configured CPU limit are confirmed.
 - R2's active snapshot matches the frozen baseline: SHA prefix `2b1bea6d`, `366,391` rules, `8,785,954` binary bytes; every retained history binary also verifies.
 - The manual Wrangler tail sample has been reviewed without disclosing raw request metadata.
-- The Workers account plan / CPU limit and the Pages production rollback / auto-deploy containment checks are confirmed.
+- The Pages production rollback and auto-deploy containment checks are confirmed.
 
-A missing secret, insufficient read-only permission, too-small metric sample, version drift, artifact drift, incomplete bucket detail, any failed CPU/error threshold, or unverified plan/Pages containment is **FAIL / HOLD**. Do not loosen numeric thresholds or substitute write-capable credentials to force a pass.
+A missing secret, insufficient read-only permission, too-small metric sample, no qualified P50 bucket, version drift, artifact drift, row-cap hit, missing metric, CPU/error threshold failure, or unverified plan/Pages containment is **FAIL / HOLD**. Do not loosen numeric thresholds or substitute write-capable credentials to force a pass.
 
 ## Explicitly forbidden during this gate
 
