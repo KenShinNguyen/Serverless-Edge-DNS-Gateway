@@ -141,14 +141,14 @@ export async function verifyAndHealHistory(s3, bucket, entries) {
   const healed = [];
 
   for (const entry of entries) {
-    const shardKeys = [
-      ...(entry.shards?.global ? [entry.shards.global.key] : []),
-      ...Object.values(entry.shards?.entries ?? {}).map((descriptor) => descriptor.key),
+    const shardDescriptors = [
+      ...(entry.shards?.global ? [entry.shards.global] : []),
+      ...Object.values(entry.shards?.entries ?? {}),
     ];
     const results = await Promise.allSettled([
       headObject(s3, bucket, entry.key),
       headObject(s3, bucket, entry.stats),
-      ...shardKeys.map((key) => headObject(s3, bucket, key)),
+      ...shardDescriptors.map((descriptor) => headObject(s3, bucket, descriptor.key)),
     ]);
 
     const fatalErrors = [];
@@ -164,7 +164,14 @@ export async function verifyAndHealHistory(s3, bucket, entries) {
         continue;
       }
 
-      if (!Number.isInteger(result.value.ContentLength) || result.value.ContentLength <= 0) {
+      const expectedShard = results.indexOf(result) >= 2
+        ? shardDescriptors[results.indexOf(result) - 2]
+        : null;
+      if (
+        !Number.isInteger(result.value.ContentLength)
+        || result.value.ContentLength <= 0
+        || (expectedShard && result.value.ContentLength !== expectedShard.binaryBytes)
+      ) {
         drop = true;
       }
     }
