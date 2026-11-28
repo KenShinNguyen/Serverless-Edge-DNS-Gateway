@@ -345,15 +345,18 @@ export class RuleSnapshotManager {
       const fallback = candidate === this.active ? this.previous : this.active;
       if (fallback) {
         try {
-          return await this.evaluateSnapshot(fallback, qname, bucket);
+          const fallbackDecision = await this.evaluateSnapshot(fallback, qname, bucket);
+          // An older snapshot can prove that a name is blocked, but PASS/ALLOW
+          // cannot prove the newer (failed) snapshot would also permit it.
+          // Preserve a known BLOCK; otherwise fail closed with SERVFAIL.
+          if (fallbackDecision === "BLOCK") return "BLOCK";
         } catch (fallbackError) {
           this.lastError = fallbackError instanceof Error
             ? fallbackError.message.slice(0, 160)
             : this.lastError;
         }
       }
-      // No verified previous snapshot is available. Returning PASS here would
-      // turn a missing/corrupt cold-start shard into a silent filtering bypass.
+      // No verified decision can safely authorize this query.
       return "UNAVAILABLE";
     }
   }
