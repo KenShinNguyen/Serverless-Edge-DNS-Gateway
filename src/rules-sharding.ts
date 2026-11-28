@@ -32,7 +32,7 @@ export function isRuleShardId(value: unknown): value is string {
 
 function normalizeDomain(value: string): string {
   if (typeof value !== "string") throw new Error("Domain must be a string");
-  const normalized = value.trim().toLowerCase().replace(/\\.$/, "");
+  const normalized = value.trim().toLowerCase().replace(/\.$/, "");
   if (!normalized || normalized.length > 253 || /[^a-z0-9._-]/.test(normalized)) {
     throw new Error("Domain is not a normalized ASCII name");
   }
