@@ -5,12 +5,18 @@ import { test } from "node:test";
 
 const root = resolve(import.meta.dirname, "..");
 const workflowPath = resolve(root, ".github/workflows/publish-rules-r2.yml");
+const ciPath = resolve(root, ".github/workflows/ci.yml");
+const blocklistWorkflowPath = resolve(root, ".github/workflows/Update_DNS_Blocklists.yml");
 const publishPath = resolve(root, "scripts/publish-r2.mjs");
 const verifyPath = resolve(root, "scripts/verify-r2-state.mjs");
+const wranglerPath = resolve(root, "wrangler.jsonc");
 
 const workflow = await readFile(workflowPath, "utf8");
+const ciWorkflow = await readFile(ciPath, "utf8");
+const blocklistWorkflow = await readFile(blocklistWorkflowPath, "utf8");
 const publish = await readFile(publishPath, "utf8");
 const verify = await readFile(verifyPath, "utf8");
+const wrangler = JSON.parse(await readFile(wranglerPath, "utf8"));
 
 function runBlocks(source) {
   const lines = source.split(/\r?\n/);
@@ -53,11 +59,40 @@ test("workflow contract: concurrency and least-privilege permissions are locked"
   assert.doesNotMatch(workflow, /contents:\s*write/);
 });
 
-test("workflow contract: schedule normalizes to publish and dispatch has an explicit action set", () => {
-  assert.match(workflow, /EVENT_NAME: \$\{\{ github\.event_name \}\}/);
-  assert.match(workflow, /INPUT_ACTION: \$\{\{ inputs\.action \}\}/);
-  assert.match(workflow, /if \[ \"\$EVENT_NAME\" = \"schedule\" \]; then[\s\S]*EFFECTIVE=\"publish\"/);
-  assert.match(workflow, /publish\|dry-run\|rollback\|unrevoke\|verify/);
+test("workflow contract: R2 publisher is manual-only and defaults to dry-run", () => {
+  assert.doesNotMatch(workflow, /schedule:/);
+  assert.match(workflow, /workflow_dispatch:/);
+  assert.ok(workflow.includes('default: "dry-run"'));
+  assert.ok(workflow.includes("INPUT_ACTION: ${{ inputs.action }}"));
+  assert.ok(workflow.includes('EFFECTIVE="dry-run"'));
+  assert.ok(workflow.includes("publish|dry-run|rollback|unrevoke|verify"));
+});
+
+test("workflow contract: manually approved draft PRs trigger CI", () => {
+  assert.ok(ciWorkflow.includes("pull_request:\n    types: [opened, synchronize, reopened, ready_for_review]"));
+});
+
+test("workflow contract: blocklist refresh creates a guarded draft PR and freezes its HEAD during review", () => {
+  assert.match(blocklistWorkflow, /schedule:/);
+  assert.ok(blocklistWorkflow.includes("pull-requests: write"));
+  assert.ok(blocklistWorkflow.includes("peter-evans/create-pull-request@v7"));
+  assert.ok(blocklistWorkflow.includes("branch: automation/dns-blocklists"));
+  assert.ok(blocklistWorkflow.includes("draft: true"));
+  assert.ok(blocklistWorkflow.includes("gh pr list --state open --head automation/dns-blocklists"));
+  assert.ok(blocklistWorkflow.includes("if: steps.review.outputs.exists != 'true'"));
+  assert.doesNotMatch(blocklistWorkflow, /git-auto-commit-action/);
+  assert.doesNotMatch(blocklistWorkflow, /git push origin main/);
+});
+
+test("Workers observability is sampled, query-redacted and excludes raw invocation logs", () => {
+  assert.equal(wrangler.observability.enabled, true);
+  assert.equal(wrangler.observability.head_sampling_rate, 0.05);
+  assert.equal(wrangler.observability.logs.enabled, true);
+  assert.equal(wrangler.observability.logs.invocation_logs, false);
+  assert.equal(wrangler.observability.logs.head_sampling_rate, 0.05);
+  assert.equal(wrangler.observability.redact_query_string, true);
+  assert.equal(wrangler.observability.logs.redact_query_string, undefined);
+  assert.equal(wrangler.triggers, undefined, "the Worker exports no scheduled handler");
 });
 
 test("workflow contract: no user-controlled inputs are interpolated inside run blocks", () => {

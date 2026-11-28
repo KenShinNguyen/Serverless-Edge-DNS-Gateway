@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { query, response, record, counts, rcodeOf } from './helpers.mjs';
+import { query, response, record, opt, counts, rcodeOf } from './helpers.mjs';
 
 // Each case gets a fresh module instance: upstream config and the "lists have
 // been fetched" flag both live in module scope and are applied exactly once.
@@ -176,6 +176,27 @@ test('malformed and non-query messages are rejected before any upstream call', a
   assert.equal(calls.length, 0);
 });
 
+test('DoH enforces the RFC 8484 65,535-byte cap on POST without buffering oversized streams', async () => {
+  const worker = await loadWorker();
+  const calls = stubFetch(okUpstream(response({ answers: [] })));
+
+  // DNS header + question + OPT RR = 40 bytes before OPT RDATA.
+  const exactLimit = query({ additional: [opt({ rdata: new Array(65495).fill(0) })] });
+  assert.equal(exactLimit.byteLength, 65535);
+  const accepted = await call(worker, '/dns-query', { body: exactLimit });
+  assert.equal(accepted.status, 200);
+
+  const tooLarge = query({ additional: [opt({ rdata: new Array(65496).fill(0) })] });
+  assert.equal(tooLarge.byteLength, 65536);
+  const rejected = await call(worker, '/dns-query', { body: tooLarge });
+  assert.equal(rejected.status, 413);
+
+  const encodedTooLarge = Buffer.from(new Uint8Array(tooLarge)).toString('base64url');
+  const rejectedGet = await call(worker, `/dns-query?dns=${encodedTooLarge}`, { method: 'GET' });
+  assert.equal(rejectedGet.status, 413);
+  assert.equal(calls.length, 1, 'oversized messages never reach an upstream');
+});
+
 test('GET carries the query base64url-encoded, and rejects a malformed parameter', async () => {
   const worker = await loadWorker();
   stubFetch(okUpstream(response({ answers: [record({ ttl: 300, rdata: [93, 184, 216, 34] })] })));
@@ -264,6 +285,34 @@ test('CORS_ORIGIN adds the header to preflight and to answers', async () => {
 
   const answer = await call(worker, '/dns-query', { body: query(), env });
   assert.equal(answer.headers.get('access-control-allow-origin'), 'https://app.example');
+});
+
+test('request summary logs are sanitized and never include tokens, DNS names, IPs or URLs', async () => {
+  const worker = await loadWorker();
+  stubFetch(okUpstream(response({ answers: [record({ ttl: 60, rdata: [93, 184, 216, 34] })] })));
+  const originalLog = console.log;
+  const entries = [];
+  console.log = (...args) => entries.push(args.join(' '));
+  try {
+    const res = await call(worker, '/dns-query/path-secret?marker=query-secret', {
+      body: query({ questions: [{ name: 'private-query.example', type: 1 }] }),
+      env: { DOH_TOKEN: 'path-secret' }
+    });
+    assert.equal(res.status, 200);
+  } finally {
+    console.log = originalLog;
+  }
+
+  const summary = entries.map((entry) => JSON.parse(entry)).find((entry) => entry.event === 'request_summary');
+  assert.ok(summary);
+  assert.equal(summary.method, 'POST');
+  assert.equal(summary.route, 'dns-query');
+  assert.equal(summary.status, 200);
+  assert.equal(typeof summary.durationMs, 'number');
+  const serialized = JSON.stringify(summary);
+  for (const secret of ['path-secret', 'query-secret', 'private-query.example', '203.0.113.9', 'https://']) {
+    assert.ok(!serialized.includes(secret), 'summary must not contain ' + secret);
+  }
 });
 
 test('an unreachable blocklist leaves the previously loaded list in place', async () => {

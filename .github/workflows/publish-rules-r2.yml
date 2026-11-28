@@ -1,14 +1,14 @@
 name: Compile and Publish Rules to R2
 
 on:
-  schedule:
-    - cron: "15 */6 * * *"
+  # R2 is a production data plane. Publishing must be an explicit operator action;
+  # routine schedule-based writes remain disabled during the migration freeze.
   workflow_dispatch:
     inputs:
       action:
         description: "R2 operation"
         required: false
-        default: "publish"
+        default: "dry-run"
         type: choice
         options:
           - "publish"
@@ -42,7 +42,7 @@ permissions:
 
 jobs:
   r2-dispatch:
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -50,16 +50,13 @@ jobs:
       - name: Resolve execution mode safely
         id: mode
         env:
-          EVENT_NAME: ${{ github.event_name }}
           INPUT_ACTION: ${{ inputs.action }}
         run: |
           set -euo pipefail
-          if [ "$EVENT_NAME" = "schedule" ]; then
-            EFFECTIVE="publish"
-          elif [ -n "$INPUT_ACTION" ]; then
+          if [ -n "$INPUT_ACTION" ]; then
             EFFECTIVE="$INPUT_ACTION"
           else
-            EFFECTIVE="publish"
+            EFFECTIVE="dry-run"
           fi
 
           case "$EFFECTIVE" in

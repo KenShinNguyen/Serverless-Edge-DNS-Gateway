@@ -13,7 +13,7 @@ A secure, high-performance DNS-over-HTTPS (DoH) proxy running on Cloudflare's gl
 
 *   **100% Free Usage**: Fully hosted on Cloudflare Workers with a limit of 100,000 requests per day. Given an average consumption of 200 – 4,000 requests per device daily, a single account can comfortably support 10 – 20 devices (or even 100 – 200 devices with casual usage).
 *   **Custom Domain Scaling**: Attach your own domain for a professional, short DNS endpoint. You can spread usage across multiple Cloudflare accounts to multiply your quota (100k per account) while keeping your custom domains.
-*   **Smart Adblocking**: Local filtering using professional lists (AdGuard, ABPVN, Bypass-VN, etc.), automatically updated **every 3 hours**.
+*   **Smart Adblocking**: Local filtering using professional lists (AdGuard, HaGeZi, etc.). Source lists are checked every 3 hours and changes are proposed as a guarded draft PR for review.
 *   **ECS Geo-Optimization (RFC 7871)**: Injects EDNS Client Subnet (IPv4 `/24`, IPv6 `/48`) to ensure CDNs (Akamai, CloudFront, Fastly, BunnyCDN, Gcore) resolve you to the nearest servers.
 *   **Sequential Failover Reliability**: 
     *   **Primary/Fallback**: Tries the primary upstream first, with automatic failover to a *different* backup resolver if it fails.
@@ -32,7 +32,11 @@ A secure, high-performance DNS-over-HTTPS (DoH) proxy running on Cloudflare's gl
 ### 1. Fork & Setup Actions
 1. [Fork this project](../../fork) to your GitHub account.
 2. Go to the **Actions** tab in your forked repository and click **I understand my workflows, go ahead and enable them**.
-3. Manually select and **Enable** the following workflows: `Update DNS Blocklists` and `Delete Old Workflow Runs`. (`Update Filter Lists` is the optional Layer 2 / CGPS workflow — leave it disabled unless you set up the secrets described [below](#-layer-2-cloudflare-gateway-security-filtering-cgps).)
+3. Enable `Update DNS Blocklists` and `Delete Old Workflow Runs`. (`Update Filter Lists` is the optional Layer 2 / CGPS workflow — leave it disabled unless you set up the secrets described [below](#-layer-2-cloudflare-gateway-security-filtering-cgps).)
+
+`Update DNS Blocklists` checks its sources every 3 hours, applies minimum-count and maximum-drop guards, then opens or updates a **draft PR**. Review the draft PR, click **Ready for review** to trigger CI, then merge only after all checks pass. It does not push rule changes straight to `main`. While a rule-review PR is open, scheduled refreshes are skipped so its reviewed HEAD cannot silently move.
+
+The `Compile and Publish Rules to R2` workflow is **manual-only** and defaults to `dry-run`. Choose `publish` explicitly only when you have approved a ruleset and intend to write Production R2.
 
 ### 2. Deploy to Cloudflare Workers
 1. Connect the repository to Cloudflare Workers using the Workers build/deployment flow.
@@ -76,15 +80,15 @@ Per-deployment settings (upstreams, access token, CORS) are read from **environm
 
 ## 🛠 Rule Management (`rules/`)
 
-Rules are located in the `rules/` folder. When you modify and commit these files on GitHub, the configured Worker deployment pipeline can compile and publish the updated rules.
+Rules are located in the `rules/` folder. After reviewing and merging rule changes to `main`, run `Compile and Publish Rules to R2` manually. Its default action is `dry-run`; choose `publish` explicitly to write a new Production R2 snapshot.
 
 Detailed rules:
 
-*   **`blocklists.txt`**: Automatically updated **every 3 hours** by the GitHub Actions workflow.
+*   **`blocklists.txt`**: A scheduled GitHub Actions workflow checks source lists every 3 hours and creates or refreshes a draft PR; it never commits directly to `main`.
     *   **Matching is wildcard**: an entry blocks that domain *and every subdomain under it*, walking from the queried name up to the apex and stopping at the first hit. This mirrors how the sources are published — hagezi's `wildcard/<list>-onlydomains.txt` strips subdomains on purpose, and only ~1.5% of the merged list are subdomains of another entry, so exact matching used to let most real ad hostnames through (`doubleclick.net` was blocked while `googleads.g.doubleclick.net` resolved normally).
     *   **Allowlist precedence is per level**, so the most specific rule wins: an allowlisted `foo.example.com` stays reachable under a blocked `example.com`, and a blocked `ads.example.com` stays blocked under an allowlisted `example.com`.
     *   **How to configure**: Edit the URLs in the `curl` command inside [update_lists.sh](update_lists.sh) to add or remove filtering sources.
-    *   **Safety guard**: the update aborts and keeps the previous list if download failures would shrink it below 50,000 domains (override with the `MIN_DOMAINS` environment variable), or if more than half the sources fail.
+    *   **Safety guards**: source downloads must pass the existing 50,000-domain minimum and source-failure checks. The final blocklist must remain at least 50,000 entries and the allowlist at least 100; either candidate is rejected if it shrinks by more than 20% compared with the previous committed file. Overrides: `MIN_DOMAINS`, `MIN_ALLOW_DOMAINS`, `MIN_FINAL_BLOCK_DOMAINS`, `MIN_FINAL_ALLOW_DOMAINS`, `MAX_BLOCKLIST_DROP_PERCENT`, and `MAX_ALLOWLIST_DROP_PERCENT`.
 *   **`allowlists.txt`**: Generated by the same workflow, from two places: the AdGuard exclusion/exception sources, and every `@@` exception rule found in the blocklist sources themselves. Domains here override `blocklists.txt` and are subtracted from it at build time, so a domain can never be on both lists.
     *   **Why `@@` matters**: in AdBlock syntax `@@||example.com^` means *do not block* `example.com`. Feeding that rule into the blocklist would block exactly the domains a filter author deliberately exempted, so exceptions are routed to the allowlist instead.
     *   **Only whole-domain rules are used**: cosmetic rules (`site.com##.ad-box`), modifier rules (`||site.com^$popup`, `$third-party`, `$domain=`) and regex rules are skipped. Each narrows a rule to a context DNS cannot see, and stripping the qualifier would turn "hide a banner on this site" into "block this site entirely" — which is how a browser-oriented list can take a major site offline.
@@ -139,7 +143,7 @@ Device ──DoH──▶ Cloudflare Worker (Layer 1: ads/tracking ~1M domains, 
 ### Browsers (Chrome / Edge / Firefox)
 1.  Go to **Settings** > **Privacy and Security** > **Security**.
 2.  Enable **"Use secure DNS"** and select **"Custom"**.
-3.  Paste your endpoint: `https://your-project.pages.dev/dns-query`
+3.  Paste your endpoint: `https://<your-worker-subdomain>.workers.dev/dns-query` (or your configured custom domain).
 
 ### Apple (iOS / macOS)
 1.  Open your project URL in **Safari**.
@@ -162,7 +166,7 @@ Device ──DoH──▶ Cloudflare Worker (Layer 1: ads/tracking ~1M domains, 
 > [!NOTE]
 > When `DOH_TOKEN` is set, append it to every endpoint: `/dns-query/<token>`, `/debug/<token>`, `/apple/<token>`. The generated Apple profile automatically embeds the tokened URL.
 
-`/dns-query` accepts both `POST` (body `application/dns-message`) and `GET` (`?dns=<base64url>`) per RFC 8484. Queries that are shorter than a DNS header, carry `QR=1`, or contain no question are rejected with `400` before an upstream request is spent on them.
+`/dns-query` accepts both `POST` (body `application/dns-message`) and `GET` (`?dns=<base64url>`) per RFC 8484. Each decoded DNS message is limited to **65,535 bytes**. Oversized requests receive HTTP `413`; malformed messages, response packets (`QR=1`), and queries without a question receive `400` before an upstream request is spent.
 
 ---
 
@@ -184,5 +188,9 @@ node --test 'test/*.test.mjs'
 | `test/handler.test.mjs` | End-to-end routing: token gating, failover, geo-bypass, `/debug`, `/apple`, CORS. |
 
 CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs these on every pull request, alongside `shellcheck` on `update_lists.sh` and sanity checks on the hand-maintained rule files.
+
+### Privacy-safe request logs
+
+Workers Logs are enabled with 5% sampling, query-string redaction, and native invocation logs disabled. The Worker emits a compact application summary containing only `method`, normalized `route`, HTTP `status`, and `durationMs`. It deliberately does not log the raw URL/path (the optional `DOH_TOKEN` is a path segment), DNS names, client IPs, or request headers. Keep `invocation_logs` disabled unless the token is moved out of the URL path and a separate privacy review approves it.
 
 ---
