@@ -72,12 +72,14 @@ test("workflow contract: manually approved draft PRs trigger CI", () => {
   assert.ok(ciWorkflow.includes("pull_request:\n    types: [opened, synchronize, reopened, ready_for_review]"));
 });
 
-test("workflow contract: blocklist refresh opens a draft PR instead of pushing to main", () => {
+test("workflow contract: blocklist refresh creates a guarded draft PR and freezes its HEAD during review", () => {
   assert.match(blocklistWorkflow, /schedule:/);
   assert.ok(blocklistWorkflow.includes("pull-requests: write"));
   assert.ok(blocklistWorkflow.includes("peter-evans/create-pull-request@v7"));
   assert.ok(blocklistWorkflow.includes("branch: automation/dns-blocklists"));
   assert.ok(blocklistWorkflow.includes("draft: true"));
+  assert.ok(blocklistWorkflow.includes("gh pr list --state open --head automation/dns-blocklists"));
+  assert.ok(blocklistWorkflow.includes("if: steps.review.outputs.exists != 'true'"));
   assert.doesNotMatch(blocklistWorkflow, /git-auto-commit-action/);
   assert.doesNotMatch(blocklistWorkflow, /git push origin main/);
 });
