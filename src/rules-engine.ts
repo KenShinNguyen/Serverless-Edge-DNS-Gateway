@@ -361,9 +361,11 @@ export class RuleSnapshotManager {
   public getHealth(): RuleSnapshotHealth {
     const snapshot = this.active;
     const loadedShardCount = snapshot?.tables.size ?? 0;
-    const active = Boolean(snapshot && loadedShardCount > 0);
+    // A valid manifest with no matching shard is still an authoritative
+    // snapshot decision (PASS). A failed manifest/shard load is not.
+    const active = snapshot !== null && this.lastError === null;
     return {
-      status: active
+      status: snapshot
         ? (this.lastError ? "stale" : "ready")
         : (this.lastError ? "degraded" : "uninitialized"),
       sha256: snapshot?.sha256 ?? null,
