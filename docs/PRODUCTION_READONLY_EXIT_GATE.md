@@ -34,7 +34,7 @@ Create these secrets before running the workflow. The workflow intentionally doe
 
 **Do not reuse** `R2_ACCESS_KEY_ID` or `R2_SECRET_ACCESS_KEY` from the publisher. Create a separate R2 credential limited to **Object Read** for the single production bucket. The verifier code imports only `GetObjectCommand` and `HeadObjectCommand`, and the workflow passes only the dedicated `R2_READONLY_*` secrets.
 
-Cloudflare documents `Workers Metadata Read-Only` as sufficient for both listing Worker deployments and using `wrangler tail`. The Analytics query additionally requires `Account Analytics Read`. No Workers Editor, Workers Scripts Write, R2 Object Write, or account administration permission is needed.
+Cloudflare documents [Workers Metadata Read-Only](https://developers.cloudflare.com/workers/authorization/workers/) as sufficient for both [listing Worker deployments](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/deployments/methods/list/) and using `wrangler tail`. The [Workers Analytics GraphQL query](https://developers.cloudflare.com/analytics/graphql-api/tutorials/querying-workers-metrics/) additionally requires `Account Analytics Read`. No Workers Editor, Workers Scripts Write, R2 Object Write, or account administration permission is needed.
 
 ## Manual runtime evidence: Wrangler tail
 
@@ -54,7 +54,7 @@ Observe a short sample, then stop it with **Ctrl-C**. Confirm the event contains
 
 Do not enable native invocation logs for this check. The optional `DOH_TOKEN` is carried in the URL path; raw invocation logs or copied request URLs could disclose it. Do not paste raw tail output into a ticket or PR if it contains request metadata beyond the sanitized summary.
 
-Cloudflare's current CLI reference documents `wrangler tail --format json --search`, and the permission reference lists **Metadata Read-Only** as the minimum role for tailing a Worker.
+Cloudflare's [current CLI reference](https://developers.cloudflare.com/workers/wrangler/commands/workers/) documents `wrangler tail --format json --search`, and the permission reference lists **Metadata Read-Only** as the minimum role for tailing a Worker.
 
 ## Manual Pages containment check
 
