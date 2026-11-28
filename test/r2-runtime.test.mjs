@@ -497,3 +497,25 @@ test('Worker returns DNS SERVFAIL when a cold isolate cannot verify its first sh
   assert.equal(rcodeOf(await result.arrayBuffer()), 2, 'DNS RCODE must be SERVFAIL');
   assert.equal(upstreamCalls, 0, 'an unverified rules snapshot must never reach upstream');
 });
+
+
+test('failed new shard does not turn a previous PASS into an allow decision', async () => {
+  const manager = new RuleSnapshotManager();
+  const oldBucket = await makeBucket([['unrelated.example', 'BLOCK']]);
+  assert.equal(await manager.evaluate('ads.example.com', oldBucket, ctx()), 'PASS');
+
+  const replacement = await makeShardedBucket([['ads.example.com', 'BLOCK']]);
+  const shardId = shardIdForRuleDomain('ads.example.com');
+  const descriptor = replacement.manifest.shards.entries[shardId];
+  replacement.objects.delete(descriptor.key);
+  manager.nextCheckAt = 0;
+  const tasks = [];
+  await manager.evaluate('ads.example.com', replacement, { waitUntil: (p) => tasks.push(p) });
+  await Promise.all(tasks);
+
+  assert.equal(
+    await manager.evaluate('ads.example.com', replacement, ctx()),
+    'UNAVAILABLE',
+    'an older PASS cannot prove a newly added block rule should be allowed',
+  );
+});
