@@ -82,7 +82,8 @@ test("Workers observability is sampled, query-redacted and excludes raw invocati
   assert.equal(wrangler.observability.logs.enabled, true);
   assert.equal(wrangler.observability.logs.invocation_logs, false);
   assert.equal(wrangler.observability.logs.head_sampling_rate, 0.05);
-  assert.equal(wrangler.observability.logs.redact_query_string, true);
+  assert.equal(wrangler.observability.redact_query_string, true);
+  assert.equal(wrangler.observability.logs.redact_query_string, undefined);
   assert.equal(wrangler.triggers, undefined, "the Worker exports no scheduled handler");
 });
 
