@@ -159,6 +159,7 @@ interface SnapshotState {
   shards?: ShardedRuleManifest;
   tables: Map<string, ZeroCopyRuleTable>;
   inFlight: Map<string, Promise<ZeroCopyRuleTable>>;
+  failedUntil: Map<string, number>;
 }
 
 export interface RuleSnapshotHealth {
@@ -234,6 +235,7 @@ function parseManifest(raw: unknown): SnapshotState {
     legacy: { key, sha256, rules: rules as number, binaryBytes: 0 },
     tables: new Map(),
     inFlight: new Map(),
+    failedUntil: new Map(),
   };
 
   if (shards === undefined || shards === null) return state;
@@ -491,6 +493,11 @@ export class RuleSnapshotManager {
     const inFlight = snapshot.inFlight.get(slot);
     if (inFlight) return inFlight;
 
+    const retryAt = snapshot.failedUntil.get(slot) ?? 0;
+    if (Date.now() < retryAt) {
+      return Promise.reject(new Error(`Rule shard ${slot} is in retry cooldown`));
+    }
+
     const promise = this.fetchImmutableBinary(bucket, descriptor)
       .then((validated) => {
         if (validated.count !== descriptor.rules) {
@@ -500,7 +507,14 @@ export class RuleSnapshotManager {
         }
         const table = new ZeroCopyRuleTable(validated);
         snapshot.tables.set(slot, table);
+        snapshot.failedUntil.delete(slot);
         return table;
+      })
+      .catch((error) => {
+        // Avoid re-hashing/refetching one bad shard on every DNS request.
+        // The previously active snapshot remains the serving fallback.
+        snapshot.failedUntil.set(slot, Date.now() + ERROR_COOLDOWN_MS);
+        throw error;
       })
       .finally(() => {
         snapshot.inFlight.delete(slot);
