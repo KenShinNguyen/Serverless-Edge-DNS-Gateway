@@ -328,3 +328,52 @@ test('a corrupt replacement shard keeps the previous verified snapshot active', 
   assert.equal(manager.getLoadedVersion(), oldVersion);
   assert.equal(manager.getHealth().status, 'stale');
 });
+
+
+test('same-SHA legacy-to-sharded manifest migration activates the shard layout', async () => {
+  const entries = [['ads.example.com', 'BLOCK']];
+  const legacyBucket = await makeBucket(entries);
+  const shardedBucket = await makeShardedBucket(entries);
+  const manager = new RuleSnapshotManager();
+
+  assert.equal(
+    await manager.evaluate('ads.example.com', legacyBucket, ctx()),
+    'BLOCK',
+  );
+  const sharedSha = manager.getLoadedVersion();
+  assert.equal(sharedSha, shardedBucket.manifest.sha256);
+  assert.equal(manager.getHealth().loadedShardCount, 1);
+
+  manager.nextCheckAt = 0;
+  const refreshTasks = [];
+  const refreshContext = {
+    waitUntil(promise) {
+      refreshTasks.push(promise);
+    },
+  };
+
+  assert.equal(
+    await manager.evaluate('ads.example.com', shardedBucket, refreshContext),
+    'BLOCK',
+    'the active legacy table remains available while the metadata refresh runs',
+  );
+  assert.equal(refreshTasks.length, 1);
+  await Promise.all(refreshTasks);
+
+  assert.equal(
+    await manager.evaluate('ads.example.com', shardedBucket, ctx()),
+    'BLOCK',
+  );
+  assert.ok(
+    shardedBucket.gets.some((key) => key === shardedBucket.manifest.shards.entries[
+      shardIdForRuleDomain('ads.example.com')
+    ].key),
+    'same-SHA metadata change must load the selected shard rather than treating the manifest as unchanged',
+  );
+  assert.equal(
+    shardedBucket.gets.includes(shardedBucket.manifest.key),
+    false,
+    'the dual-reader must stop loading the compatibility monolith after adopting shard metadata',
+  );
+  assert.equal(manager.getHealth().status, 'ready');
+});
