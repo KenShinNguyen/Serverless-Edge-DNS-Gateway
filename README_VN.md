@@ -30,7 +30,7 @@ Dịch vụ DNS-over-HTTPS (DoH) bảo mật, hiệu năng cao, chạy trên h�
 2. Truy cập tab **Actions** trong repository bạn vừa fork và nhấn **I understand my workflows, go ahead and enable them**.
 3. Enable `Update DNS Blocklists` và `Delete Old Workflow Runs`. (`Update Filter Lists` là workflow Lớp 2 / CGPS tuỳ chọn — cứ để tắt nếu bạn chưa tạo các secrets mô tả ở [phần dưới](#-lớp-2-lọc-bảo-mật-bằng-cloudflare-gateway-cgps).)
 
-`Update DNS Blocklists` kiểm tra nguồn mỗi 3 giờ, áp dụng guard số lượng tối thiểu và mức sụt tối đa, rồi tạo/cập nhật **PR nháp**. Bạn phải review PR nháp, bấm **Ready for review** để kích hoạt CI, rồi chỉ merge khi mọi check đều xanh; workflow không tự commit rule vào `main`.
+`Update DNS Blocklists` kiểm tra nguồn mỗi 3 giờ, áp dụng guard số lượng tối thiểu và mức sụt tối đa, rồi tạo/cập nhật **PR nháp**. Bạn phải review PR nháp, bấm **Ready for review** để kích hoạt CI, rồi chỉ merge khi mọi check đều xanh; workflow không tự commit rule vào `main`. Trong lúc có PR rule đang mở, các lần cron mới sẽ bỏ qua để HEAD đang được review không tự thay đổi.
 
 Workflow `Compile and Publish Rules to R2` chỉ chạy thủ công và mặc định là `dry-run`. Chỉ chọn `publish` khi đã duyệt ruleset và chủ động muốn ghi Production R2.
 
