@@ -24,7 +24,6 @@ query GetWorkersAnalytics($accountTag: string, $datetimeStart: string, $datetime
         dimensions {
           datetimeMinute
           scriptName
-          status
         }
       }
     }
