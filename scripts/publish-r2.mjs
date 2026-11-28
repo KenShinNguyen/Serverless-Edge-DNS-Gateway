@@ -471,7 +471,9 @@ async function main() {
     return;
   }
 
-  if (current?.sha256 === actualSha) {
+  // A pre-sharding snapshot can have the same legacy binary SHA. In that case
+  // we must still publish its shard objects and atomically add shard metadata.
+  if (current?.sha256 === actualSha && (!localLatest.shards || current.shards)) {
     validateKey(current.key ?? binaryKey, actualSha);
     await headObject(s3, bucket, binaryKey);
     console.log(JSON.stringify({ status: "unchanged", sha256: actualSha, key: binaryKey }, null, 2));
