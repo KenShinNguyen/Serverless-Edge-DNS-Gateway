@@ -44,6 +44,47 @@ async function headRequired(s3, bucket, key) {
   return response;
 }
 
+async function verifyShardSetStrict(s3, bucket, entry, historyIndex) {
+  if (!entry.shards) return { shardObjects: 0, shardBinaryBytes: 0 };
+
+  const descriptors = [
+    ...(entry.shards.global ? [{ id: "global", ...entry.shards.global }] : []),
+    ...Object.entries(entry.shards.entries ?? {}).map(([id, descriptor]) => ({ id, ...descriptor })),
+  ];
+  let shardRules = 0;
+  let shardBinaryBytes = 0;
+
+  for (const descriptor of descriptors) {
+    const bytes = await getBytes(s3, bucket, descriptor.key);
+    const validated = validateEdnsV1Buffer(bytes);
+    const actualSha = createHash("sha256").update(validated.bytes).digest("hex");
+    if (actualSha !== descriptor.sha256) {
+      throw new Error(
+        `R2 history[${historyIndex}] shard ${descriptor.id} SHA mismatch: expected ${descriptor.sha256}, got ${actualSha}`,
+      );
+    }
+    if (validated.count !== descriptor.rules) {
+      throw new Error(
+        `R2 history[${historyIndex}] shard ${descriptor.id} rule count mismatch: manifest=${descriptor.rules}, binary=${validated.count}`,
+      );
+    }
+    if (validated.bytes.byteLength !== descriptor.binaryBytes) {
+      throw new Error(
+        `R2 history[${historyIndex}] shard ${descriptor.id} byte length mismatch: manifest=${descriptor.binaryBytes}, binary=${validated.bytes.byteLength}`,
+      );
+    }
+    shardRules += validated.count;
+    shardBinaryBytes += validated.bytes.byteLength;
+  }
+
+  if (shardRules !== entry.rules) {
+    throw new Error(
+      `R2 history[${historyIndex}] shard total mismatch: manifest=${entry.rules}, shards=${shardRules}`,
+    );
+  }
+  return { shardObjects: descriptors.length, shardBinaryBytes };
+}
+
 export async function verifyAllHistoryStrict(s3, bucket, manifest, retentionLimit = 5) {
   assertManifestInvariants(manifest, retentionLimit);
 
@@ -68,11 +109,13 @@ export async function verifyAllHistoryStrict(s3, bucket, manifest, retentionLimi
       throw new Error(`R2 history[${index}] rule count mismatch: manifest=${entry.rules}, binary=${validated.count}`);
     }
 
+    const shardSummary = await verifyShardSetStrict(s3, bucket, entry, index);
     verified.push({
       sha256: entry.sha256,
       binaryBytes: validated.bytes.byteLength,
       rules: validated.count,
       statsBytes: statsHead.ContentLength,
+      ...shardSummary,
     });
   }
 
