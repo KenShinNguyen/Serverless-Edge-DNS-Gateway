@@ -10,6 +10,7 @@ import {
 import {
   assertPinnedDeployment,
   METRIC_BUCKET_LIMIT,
+  MIN_P50_BUCKET_REQUESTS,
   summarizeWorkerMetricRows,
 } from "../scripts/production-worker-deployment-gate.mjs";
 
@@ -20,30 +21,18 @@ const r2Core = await readFile(resolve(root, "scripts/verify-r2-state.mjs"), "utf
 const r2Manifest = await readFile(resolve(root, "scripts/r2-manifest.mjs"), "utf8");
 const deploymentGate = await readFile(resolve(root, "scripts/production-worker-deployment-gate.mjs"), "utf8");
 
-function aggregateRow({
-  requests = 120,
-  errors = 0,
-  cpuP50Us = 12000,
-  cpuP99Us = 42000,
-} = {}) {
-  return {
-    sum: { requests, errors },
-    quantiles: { cpuTimeP50: cpuP50Us, cpuTimeP99: cpuP99Us },
-  };
-}
-
-function bucketRow({
+function metricRow({
   requests = 60,
   errors = 0,
   cpuP50Us = 1200,
   cpuP99Us = 4000,
-  datetime = "2026-11-28T04:00:00Z",
+  datetimeMinute = "2026-11-28T04:00:00Z",
 } = {}) {
   return {
     sum: { requests, errors },
     quantiles: { cpuTimeP50: cpuP50Us, cpuTimeP99: cpuP99Us },
     dimensions: {
-      datetime,
+      datetimeMinute,
       scriptName: "serverless-edge-dns-gateway",
       status: "success",
     },
@@ -132,133 +121,124 @@ test("production deployment gate requires the frozen version to receive 100 perc
   );
 });
 
-test("CPU gate uses whole-window P50/P99 and preserves maximum per-bucket P99", () => {
-  const result = summarizeWorkerMetricRows(
-    [aggregateRow({ requests: 120, cpuP50Us: 12000, cpuP99Us: 42000 })],
-    [
-      bucketRow({ requests: 20, cpuP50Us: 30000, cpuP99Us: 47000 }),
-      bucketRow({ requests: 100, cpuP50Us: 1200, cpuP99Us: 4050 }),
-    ],
-  );
+test("minute CPU gate converts microseconds to milliseconds and ignores low-sample P50 as a blocker", () => {
+  const result = summarizeWorkerMetricRows([
+    metricRow({
+      requests: 1,
+      cpuP50Us: 39484,
+      cpuP99Us: 46585,
+      datetimeMinute: "2026-11-28T04:00:00Z",
+    }),
+    metricRow({
+      requests: 119,
+      cpuP50Us: 1740,
+      cpuP99Us: 4050,
+      datetimeMinute: "2026-11-28T04:01:00Z",
+    }),
+  ]);
 
   assert.equal(result.requests, 120);
   assert.equal(result.errors, 0);
   assert.equal(result.bucketCount, 2);
-  assert.equal(result.aggregateCpuP50Ms, 12);
-  assert.equal(result.aggregateCpuP99Ms, 42);
-  assert.equal(result.maxBucketCpuP50Ms, 30);
-  assert.equal(result.maxBucketCpuP99Ms, 47);
+  assert.equal(result.bucketGranularity, "1 minute");
+  assert.equal(result.minimumRequestsPerP50Bucket, MIN_P50_BUCKET_REQUESTS);
+  assert.equal(result.qualifiedP50BucketCount, 1);
+  assert.equal(result.lowSampleP50BucketCount, 1);
+  assert.equal(result.maxQualifiedMinuteCpuP50Ms, 1.74);
+  assert.equal(result.maxMinuteCpuP50Ms, 39.484);
+  assert.equal(result.maxMinuteCpuP99Ms, 46.585);
   assert.equal(result.bucketsAboveP50Threshold, 1);
-  assert.equal(result.requestsInBucketsAboveP50Threshold, 20);
-  assert.equal(result.thresholds.aggregateP50Ms, 20);
-  assert.equal(result.thresholds.aggregateP99Ms, 50);
-  assert.equal(result.thresholds.maxBucketP99Ms, 50);
+  assert.equal(result.requestsInBucketsAboveP50Threshold, 1);
+  assert.equal(result.lowSampleBucketsAboveP50Threshold, 1);
+  assert.equal(result.requestsInLowSampleBucketsAboveP50Threshold, 1);
+  assert.equal(result.units.conversion, "microseconds / 1000");
 });
 
-test("CPU gate rejects insufficient whole-window request samples and invocation errors", () => {
+test("minute CPU gate rejects a qualified minute-bucket P50 above 20 ms", () => {
   assert.throws(
-    () => summarizeWorkerMetricRows(
-      [aggregateRow({ requests: 99 })],
-      [bucketRow({ requests: 99 })],
-    ),
+    () => summarizeWorkerMetricRows([
+      metricRow({ requests: 25, cpuP50Us: 20001, cpuP99Us: 40000 }),
+      metricRow({ requests: 75, cpuP50Us: 1200, cpuP99Us: 4000 }),
+    ]),
+    /max qualified minute CPU P50 exceeded threshold: 20\.001 ms/,
+  );
+});
+
+test("minute CPU gate applies the maximum P99 tail guard to every bucket including low-sample buckets", () => {
+  assert.throws(
+    () => summarizeWorkerMetricRows([
+      metricRow({ requests: 1, cpuP50Us: 39484, cpuP99Us: 50001 }),
+      metricRow({ requests: 119, cpuP50Us: 1200, cpuP99Us: 4000 }),
+    ]),
+    /max minute CPU P99 exceeded threshold: 50\.001 ms/,
+  );
+});
+
+test("minute CPU gate rejects insufficient request samples and invocation errors", () => {
+  assert.throws(
+    () => summarizeWorkerMetricRows([
+      metricRow({ requests: 99 }),
+    ]),
     /at least 100 required/,
   );
 
   assert.throws(
-    () => summarizeWorkerMetricRows(
-      [aggregateRow({ requests: 120, errors: 1 })],
-      [bucketRow({ requests: 120, errors: 1 })],
-    ),
+    () => summarizeWorkerMetricRows([
+      metricRow({ requests: 120, errors: 1 }),
+    ]),
     /errors exceeded threshold/,
   );
 });
 
-test("CPU gate rejects whole-window P50 and P99 threshold violations", () => {
-  assert.throws(
-    () => summarizeWorkerMetricRows(
-      [aggregateRow({ cpuP50Us: 20001 })],
-      [bucketRow()],
-    ),
-    /whole-window CPU P50 exceeded threshold/,
-  );
-
-  assert.throws(
-    () => summarizeWorkerMetricRows(
-      [aggregateRow({ cpuP99Us: 50001 })],
-      [bucketRow({ cpuP99Us: 49000 })],
-    ),
-    /whole-window CPU P99 exceeded threshold/,
-  );
-});
-
-test("CPU gate retains a strict maximum per-bucket P99 tail guard", () => {
-  assert.throws(
-    () => summarizeWorkerMetricRows(
-      [aggregateRow()],
-      [bucketRow({ cpuP99Us: 50001 })],
-    ),
-    /max bucket CPU P99 exceeded threshold/,
-  );
-});
-
-test("CPU gate reports hot P50 buckets without making per-bucket P50 an independent blocker", () => {
-  const result = summarizeWorkerMetricRows(
-    [aggregateRow({ requests: 121, cpuP50Us: 14000, cpuP99Us: 45000 })],
-    [
-      bucketRow({ requests: 1, cpuP50Us: 39484, cpuP99Us: 39484 }),
-      bucketRow({ requests: 120, cpuP50Us: 1800, cpuP99Us: 45000 }),
-    ],
-  );
-
-  assert.equal(result.aggregateCpuP50Ms, 14);
-  assert.equal(result.maxBucketCpuP50Ms, 39.484);
-  assert.equal(result.bucketsAboveP50Threshold, 1);
-  assert.equal(result.requestsInBucketsAboveP50Threshold, 1);
-  assert.equal(result.maxBucketCpuP99Ms, 45);
-});
-
-test("CPU gate fails closed when bucket detail reaches its configured row cap", () => {
-  const cappedRows = Array.from({ length: METRIC_BUCKET_LIMIT }, (_, index) =>
-    bucketRow({
-      requests: 1,
-      datetime: new Date(Date.UTC(2026, 10, 28, 0, 0, index)).toISOString(),
+test("minute CPU gate fails closed when no bucket has enough requests for a stable P50", () => {
+  const rows = Array.from({ length: 10 }, (_, index) =>
+    metricRow({
+      requests: 10,
+      datetimeMinute: new Date(Date.UTC(2026, 10, 28, 4, index)).toISOString(),
     }),
   );
 
   assert.throws(
-    () => summarizeWorkerMetricRows(
-      [aggregateRow({ requests: METRIC_BUCKET_LIMIT })],
-      cappedRows,
-    ),
+    () => summarizeWorkerMetricRows(rows),
+    /No minute bucket contains at least 20 requests/,
+  );
+});
+
+test("minute CPU gate fails closed when the GraphQL result reaches its row limit", () => {
+  const cappedRows = Array.from({ length: METRIC_BUCKET_LIMIT }, (_, index) =>
+    metricRow({
+      requests: 1,
+      datetimeMinute: new Date(Date.UTC(2026, 10, 28, 0, 0, index)).toISOString(),
+    }),
+  );
+
+  assert.throws(
+    () => summarizeWorkerMetricRows(cappedRows),
     /at the 1000-row limit; completeness cannot be proven/,
   );
 });
 
-test("CPU gate rejects incomplete bucket details even below the row cap", () => {
+test("minute CPU gate rejects missing or non-numeric CPU quantiles instead of treating them as zero", () => {
   assert.throws(
-    () => summarizeWorkerMetricRows(
-      [aggregateRow({ requests: 120 })],
-      [bucketRow({ requests: 119 })],
-    ),
-    /bucket totals do not match whole-window totals/,
-  );
-});
-
-test("CPU gate rejects missing aggregate or bucket quantiles rather than treating them as zero", () => {
-  assert.throws(
-    () => summarizeWorkerMetricRows(
-      [{ sum: { requests: 120, errors: 0 }, quantiles: { cpuTimeP50: null, cpuTimeP99: 40000 } }],
-      [bucketRow({ requests: 120 })],
-    ),
-    /whole-window CPU P50/,
+    () => summarizeWorkerMetricRows([
+      {
+        sum: { requests: 120, errors: 0 },
+        quantiles: { cpuTimeP50: null, cpuTimeP99: 40000 },
+        dimensions: { datetimeMinute: "2026-11-28T04:00:00Z" },
+      },
+    ]),
+    /minute bucket\[0\] CPU P50 \(microseconds\)/,
   );
 
   assert.throws(
-    () => summarizeWorkerMetricRows(
-      [aggregateRow()],
-      [{ sum: { requests: 120, errors: 0 }, quantiles: { cpuTimeP50: 1000, cpuTimeP99: null } }],
-    ),
-    /bucket\[0\] CPU P99/,
+    () => summarizeWorkerMetricRows([
+      {
+        sum: { requests: 120, errors: 0 },
+        quantiles: { cpuTimeP50: 12000, cpuTimeP99: "NaN" },
+        dimensions: { datetimeMinute: "2026-11-28T04:00:00Z" },
+      },
+    ]),
+    /invalid minute bucket\[0\] CPU P99/,
   );
 });
 
@@ -283,18 +263,20 @@ test("R2 read-only verifier uses a dedicated credential namespace and only GetOb
   assert.doesNotMatch(r2Core, /publish-r2\.mjs|PutObjectCommand|DeleteObjectsCommand|ListObjectsV2Command/);
 });
 
-test("Cloudflare GraphQL query separates whole-window quantiles from bounded per-bucket diagnostics", () => {
-  assert.match(deploymentGate, /aggregateMetrics: workersInvocationsAdaptive\(limit: 1/);
-  assert.match(deploymentGate, /bucketMetrics: workersInvocationsAdaptive\(limit: 1000/);
+test("Cloudflare Workers GraphQL gate groups by minute and checks the microsecond-to-millisecond contract", () => {
+  assert.match(deploymentGate, /workersInvocationsAdaptive\(limit: 1000/);
+  assert.match(deploymentGate, /datetimeMinute/);
+  assert.match(deploymentGate, /MICROSECONDS_PER_MILLISECOND = 1000/);
   assert.ok(deploymentGate.includes("bucketsAboveP50Threshold"));
   assert.ok(deploymentGate.includes("requestsInBucketsAboveP50Threshold"));
-  assert.ok(deploymentGate.includes("bucketRows.length >= bucketLimit"));
+  assert.ok(deploymentGate.includes("lowSampleBucketsAboveP50Threshold"));
+  assert.match(deploymentGate, /rows\.length >= bucketLimit/);
   assert.match(deploymentGate, /const METRICS_QUERY = `\s*\nquery /);
   assert.doesNotMatch(deploymentGate, /\bmutation\s+[A-Za-z_]/);
   assert.doesNotMatch(deploymentGate, /method:\s*"(?:PUT|PATCH|DELETE)"/);
 });
 
-test("Cloudflare deployment and metrics gate uses GET plus a GraphQL query, never a GraphQL mutation", () => {
+test("Cloudflare deployment gate uses GET plus a GraphQL query, never a GraphQL mutation", () => {
   assert.ok(deploymentGate.includes('method: "GET"'));
   assert.ok(deploymentGate.includes("workersInvocationsAdaptive"));
   assert.doesNotMatch(deploymentGate, /method:\s*"(?:PUT|PATCH|DELETE)"/);
