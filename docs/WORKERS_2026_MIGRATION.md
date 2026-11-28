@@ -100,6 +100,7 @@ Phase 3C hardens the operational path without deploying the Worker or writing to
 
 - `Update DNS Blocklists` checks its sources every three hours and opens or updates a draft PR on `automation/dns-blocklists`; it does not push directly to `main`.
 - The updater uses `GITHUB_TOKEN`; after inspecting a draft candidate, an operator marks it ready for review. The CI workflow explicitly listens for `ready_for_review`, so the final tests run before a human merges the candidate.
+- While the automation branch has an open PR, subsequent scheduled refreshes skip rather than mutate that PR's HEAD. The next refresh resumes after the review PR is merged or closed.
 - The script builds both list candidates before replacing either tracked file. Source failures, absolute floors, and previous-file drop guards fail closed.
 - Defaults: blocklist floor 50,000 entries, allowlist floor 100 entries, maximum 20% shrink for each list, and no more than half of sources failing in either source group.
 - Rule PRs require human review and merge before they become inputs to a release.
