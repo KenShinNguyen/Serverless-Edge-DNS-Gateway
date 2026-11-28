@@ -364,9 +364,12 @@ export class RuleSnapshotManager {
     // A valid manifest with no matching shard is still an authoritative
     // snapshot decision (PASS). A failed manifest/shard load is not.
     const active = snapshot !== null && this.lastError === null;
+    const hasVerifiedTables = loadedShardCount > 0;
     return {
       status: snapshot
-        ? (this.lastError ? "stale" : "ready")
+        ? (this.lastError
+          ? (hasVerifiedTables ? "stale" : "degraded")
+          : "ready")
         : (this.lastError ? "degraded" : "uninitialized"),
       sha256: snapshot?.sha256 ?? null,
       ruleCount: snapshot?.ruleCount ?? 0,
