@@ -5,6 +5,7 @@ import { test } from "node:test";
 import {
   buildDnsProbeQuery,
   verifyDnsProbeResponse,
+  validateProductionDohUrl,
 } from "../scripts/production-worker-smoke.mjs";
 import {
   assertPinnedDeployment,
@@ -15,6 +16,7 @@ const root = resolve(import.meta.dirname, "..");
 const workflow = await readFile(resolve(root, ".github/workflows/production-readonly-gate.yml"), "utf8");
 const r2Verifier = await readFile(resolve(root, "scripts/verify-r2-state-readonly.mjs"), "utf8");
 const r2Core = await readFile(resolve(root, "scripts/verify-r2-state.mjs"), "utf8");
+const r2Manifest = await readFile(resolve(root, "scripts/r2-manifest.mjs"), "utf8");
 const deploymentGate = await readFile(resolve(root, "scripts/production-worker-deployment-gate.mjs"), "utf8");
 
 test("production DNS probe emits a single bounded example.com A query", () => {
@@ -26,6 +28,20 @@ test("production DNS probe emits a single bounded example.com A query", () => {
   assert.equal(query.readUInt16BE(query.length - 4), 1);
   assert.equal(query.readUInt16BE(query.length - 2), 1);
   assert.ok(query.byteLength < 512);
+});
+
+test("production DoH URL validation accepts only HTTPS dns-query paths and keeps token paths opaque", () => {
+  assert.equal(
+    validateProductionDohUrl("https://example.workers.dev/dns-query").pathname,
+    "/dns-query",
+  );
+  assert.equal(
+    validateProductionDohUrl("https://example.workers.dev/dns-query/token-segment").pathname,
+    "/dns-query/token-segment",
+  );
+  assert.throws(() => validateProductionDohUrl("http://example.workers.dev/dns-query"), /HTTPS/);
+  assert.throws(() => validateProductionDohUrl("https://example.workers.dev/other"), /dns-query/);
+  assert.throws(() => validateProductionDohUrl("https://example.workers.dev/dns-query?token=x"), /query string/);
 });
 
 test("production DNS probe rejects malformed, truncated, wrong-ID and empty-answer responses", () => {
@@ -129,6 +145,7 @@ test("R2 read-only verifier uses a dedicated credential namespace and only GetOb
   assert.ok(r2Verifier.includes("R2_READONLY_ENDPOINT"));
   assert.ok(r2Verifier.includes("R2_READONLY_ACCESS_KEY_ID"));
   assert.ok(r2Verifier.includes("R2_READONLY_SECRET_ACCESS_KEY"));
+  assert.doesNotMatch(r2Verifier, /R2_ACCESS_KEY_ID|R2_SECRET_ACCESS_KEY/);
   assert.ok(r2Verifier.includes('operations: ["GetObject", "HeadObject"]'));
   assert.doesNotMatch(r2Verifier, /PutObjectCommand|DeleteObjectsCommand|CopyObjectCommand|UploadPartCommand/);
   assert.doesNotMatch(r2Core, /publish-r2\.mjs|PutObjectCommand|DeleteObjectsCommand|ListObjectsV2Command/);
