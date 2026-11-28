@@ -90,3 +90,40 @@ The authenticated-by-configuration `/debug` route exposes non-secret snapshot st
 - `sha256` and `ruleCount`: identify the active immutable snapshot without exposing the R2 credentials or account configuration.
 
 Phase 3A tests lock both the healthy and malformed-manifest paths. This is an observability/test gate only; it does not require a production deployment or a production R2 write.
+
+
+## Phase 3C — Operational hardening
+
+Phase 3C hardens the operational path without deploying the Worker or writing to Production R2.
+
+### Rule update pipeline
+
+- `Update DNS Blocklists` checks its sources every three hours and opens or updates a draft PR on `automation/dns-blocklists`; it does not push directly to `main`.
+- The script builds both list candidates before replacing either tracked file. Source failures, absolute floors, and previous-file drop guards fail closed.
+- Defaults: blocklist floor 50,000 entries, allowlist floor 100 entries, maximum 20% shrink for each list, and no more than half of sources failing in either source group.
+- Rule PRs require human review and merge before they become inputs to a release.
+
+### R2 publication boundary
+
+- `publish-rules-r2.yml` is manual-only; the six-hour production publish schedule has been removed.
+- The default dispatch action is `dry-run`. A human operator must explicitly choose `publish` to write the R2 snapshot.
+- This gate does not execute a publish or a production R2 write.
+
+### DoH body limits
+
+- POST bodies are read incrementally and cancelled as soon as the cumulative size exceeds 65,535 bytes.
+- GET base64url input is length-checked and the decoded DNS message is checked against the same 65,535-byte cap.
+- Oversized requests receive HTTP 413; malformed DNS messages continue to receive HTTP 400.
+
+### Privacy-safe observability
+
+- Workers Logs are enabled at 5% sampling; query-string redaction is enabled.
+- Native invocation logs remain disabled because the optional `DOH_TOKEN` is part of the request path and URL redaction does not remove path segments.
+- Application summaries contain only method, normalized route, HTTP status, and duration. Raw URL/path, DNS question names, client IPs, and request headers are deliberately excluded.
+
+### Exit guardrails
+
+- No production Worker deployment.
+- No Production R2 write.
+- No Worker secret or variable changes.
+- Pages rollback and automatic production branch deployment containment remain untouched.
