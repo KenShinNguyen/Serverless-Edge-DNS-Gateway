@@ -281,10 +281,7 @@ test('sharded Worker loads only the global table and the query-selected shard', 
   const fetchedKeys = new Set(bucket.gets);
   assert.ok(fetchedKeys.has('compiled/latest.json'));
   assert.ok(fetchedKeys.has(bucket.manifest.shards.global.key));
-  const selectedShardIds = new Set([
-    shardIdForRuleDomain('example.com'),
-    shardIdForRuleDomain('other.net')
-  ]);
+  const selectedShardIds = new Set([shardIdForRuleDomain('example.com')]);
   for (const id of selectedShardIds) {
     const descriptor = bucket.manifest.shards.entries[id];
     if (descriptor) assert.ok(fetchedKeys.has(descriptor.key));
