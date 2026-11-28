@@ -190,7 +190,11 @@ test('DoH enforces the RFC 8484 65,535-byte cap on POST without buffering oversi
   assert.equal(tooLarge.byteLength, 65536);
   const rejected = await call(worker, '/dns-query', { body: tooLarge });
   assert.equal(rejected.status, 413);
-  assert.equal(calls.length, 1, 'the oversized message never reaches an upstream');
+
+  const encodedTooLarge = Buffer.from(new Uint8Array(tooLarge)).toString('base64url');
+  const rejectedGet = await call(worker, `/dns-query?dns=${encodedTooLarge}`, { method: 'GET' });
+  assert.equal(rejectedGet.status, 413);
+  assert.equal(calls.length, 1, 'oversized messages never reach an upstream');
 });
 
 test('GET carries the query base64url-encoded, and rejects a malformed parameter', async () => {
