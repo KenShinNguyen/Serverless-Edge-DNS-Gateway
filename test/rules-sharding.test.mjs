@@ -56,9 +56,11 @@ test("algorithm is stable and spans a bounded set of 256 identifiers", () => {
   for (const id of ids) assert.match(id, /^[0-9a-f]{2}$/);
 });
 
-test("invalid or non-ASCII names fail closed instead of selecting a data shard", () => {
-  assert.throws(() => shardIdForQuery("éxample.com"), /ASCII/);
-  assert.throws(() => shardIdForQuery("example..com"), /invalid label/);
+test("query routing depends only on the last two labels, whatever bytes precede them", () => {
+  const expected = shardIdForRuleDomain("example.com");
+  for (const prefix of ["*", "a b", "x!", "a=b", "a."]) {
+    assert.equal(shardIdForQuery(`${prefix}.example.com`), expected);
+  }
 });
 
 

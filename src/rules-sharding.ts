@@ -20,8 +20,9 @@ export function shardIdForRuleDomain(domain: string): string {
 
 /** Return the shard needed to evaluate a QNAME. */
 export function shardIdForQuery(qname: string): string {
-  const normalized = normalizeDomain(qname);
-  const labels = normalized.split(".");
+  // DNS labels may carry any byte. Route on the last two labels without
+  // validating the name, so suffix rules still match like the monolithic table.
+  const labels = qname.toLowerCase().replace(/\.$/, "").split(".");
   if (labels.length < 2) return GLOBAL_RULE_SHARD;
   return shardIdForSuffix(labels.slice(-2).join("."));
 }

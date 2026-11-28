@@ -415,3 +415,20 @@ test('same-SHA legacy-to-sharded manifest migration activates the shard layout',
   );
   assert.equal(manager.getHealth().status, 'ready');
 });
+
+
+test('a shard that fails after promotion falls back to the previous snapshot', async () => {
+  const manager = new RuleSnapshotManager();
+  assert.equal(await manager.evaluate('ads.example.com', await makeBucket([['ads.example.com', 'BLOCK']]), ctx()), 'BLOCK');
+
+  const replacement = await makeShardedBucket([['ads.example.com', 'BLOCK'], ['other.net', 'BLOCK']]);
+  const shard = replacement.manifest.shards.entries[shardIdForRuleDomain('ads.example.com')];
+  replacement.objects.delete(shard.key);
+  manager.nextCheckAt = 0;
+  const tasks = [];
+  await manager.evaluate('ads.example.com', replacement, { waitUntil: (p) => tasks.push(p) });
+  await Promise.all(tasks);
+
+  assert.equal(await manager.evaluate('other.net', replacement, ctx()), 'BLOCK');
+  assert.equal(await manager.evaluate('ads.example.com', replacement, ctx()), 'BLOCK');
+});
