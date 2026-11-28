@@ -375,8 +375,8 @@ test('same-SHA legacy-to-sharded manifest migration activates the shard layout',
   ).length;
   assert.equal(
     monolithFetchesAfterAdoption,
-    1,
-    'the in-flight request during background refresh may still use the legacy monolith once',
+    0,
+    'the already loaded legacy table is reused during refresh; no compatibility monolith refetch is needed',
   );
   await manager.evaluate('ads.example.com', shardedBucket, ctx());
   assert.equal(
