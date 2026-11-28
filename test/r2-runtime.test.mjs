@@ -274,7 +274,7 @@ test('sharded Worker loads only the global table and the query-selected shard', 
   const allowed = await send('img.ads.example.com');
   assert.equal(allowed.headers.get('x-blocked'), null);
   const apexBlocked = await send('www.example.com');
-  assert.equal(apexBlocked.headers.get('x-blocked'), 'example.com');
+  assert.equal(apexBlocked.headers.get('x-blocked'), 'www.example.com');
   const unrelated = await send('unrelated.test');
   assert.equal(unrelated.headers.get('x-blocked'), null);
 
