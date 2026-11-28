@@ -400,7 +400,8 @@ export class RuleSnapshotManager {
         ? error.message.slice(0, 160)
         : "R2 snapshot manifest load failed";
       this.nextCheckAt = Date.now() + ERROR_COOLDOWN_MS;
-      if (!this.active && !this.pending) throw error;
+      // An unavailable or malformed initial manifest is a degraded snapshot,
+      // not an exception that should fail the Worker request handler.
     }
   }
 
@@ -417,7 +418,12 @@ export class RuleSnapshotManager {
     const shards = snapshot.shards;
     if (!shards) throw new Error("Sharded snapshot metadata missing");
 
-    const requestedShard = shardIdForQuery(qname);
+    let requestedShard: string;
+    try {
+      requestedShard = shardIdForQuery(qname);
+    } catch {
+      return "PASS";
+    }
     const descriptors: Array<[string, RuleShardDescriptor]> = [];
     if (shards.global) descriptors.push(["global", shards.global]);
     const requested = requestedShard === "global" ? undefined : shards.entries[requestedShard];
