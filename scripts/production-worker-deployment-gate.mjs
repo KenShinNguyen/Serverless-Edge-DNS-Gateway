@@ -1,10 +1,26 @@
 const DEPLOYMENTS_API = "https://api.cloudflare.com/client/v4";
 const GRAPHQL_API = "https://api.cloudflare.com/client/v4/graphql";
+export const METRIC_BUCKET_LIMIT = 1000;
+
 const METRICS_QUERY = `
 query GetWorkersAnalytics($accountTag: string, $datetimeStart: string, $datetimeEnd: string, $scriptName: string) {
   viewer {
     accounts(filter: { accountTag: $accountTag }) {
-      workersInvocationsAdaptive(limit: 1000, filter: {
+      aggregateMetrics: workersInvocationsAdaptive(limit: 1, filter: {
+        scriptName: $scriptName,
+        datetime_geq: $datetimeStart,
+        datetime_leq: $datetimeEnd
+      }) {
+        sum {
+          requests
+          errors
+        }
+        quantiles {
+          cpuTimeP50
+          cpuTimeP99
+        }
+      }
+      bucketMetrics: workersInvocationsAdaptive(limit: 1000, filter: {
         scriptName: $scriptName,
         datetime_geq: $datetimeStart,
         datetime_leq: $datetimeEnd
@@ -33,6 +49,21 @@ function requiredEnv(name, env = process.env) {
   return value;
 }
 
+function requiredMetricNumber(value, label) {
+  if (value === null || value === undefined || value === "") {
+    throw new Error(`Cloudflare did not return ${label}`);
+  }
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) {
+    throw new Error(`Cloudflare returned an invalid ${label}`);
+  }
+  return number;
+}
+
+function roundMs(value) {
+  return Number(value.toFixed(3));
+}
+
 export function assertPinnedDeployment(deployment, expectedVersionId) {
   if (!deployment || !Array.isArray(deployment.versions) || deployment.versions.length !== 1) {
     throw new Error("Production Worker deployment is not pinned to exactly one version");
@@ -49,59 +80,126 @@ export function assertPinnedDeployment(deployment, expectedVersionId) {
   };
 }
 
-export function summarizeWorkerMetricRows(rows, options = {}) {
+export function summarizeWorkerMetricRows(aggregateRows, bucketRows, options = {}) {
   const minimumRequests = options.minimumRequests ?? 100;
-  if (!Array.isArray(rows) || rows.length === 0) {
-    throw new Error("Cloudflare returned no Workers invocation metric rows for the selected window");
-  }
-
-  let requests = 0;
-  let errors = 0;
-  const p50Values = [];
-  const p99Values = [];
-
-  for (const row of rows) {
-    requests += Number(row.sum?.requests ?? 0);
-    errors += Number(row.sum?.errors ?? 0);
-    const p50 = Number(row.quantiles?.cpuTimeP50);
-    const p99 = Number(row.quantiles?.cpuTimeP99);
-    if (Number.isFinite(p50)) p50Values.push(p50);
-    if (Number.isFinite(p99)) p99Values.push(p99);
-  }
-
-  if (requests < minimumRequests) {
-    throw new Error(`Cloudflare metrics sample is insufficient: ${requests} requests; at least ${minimumRequests} required`);
-  }
-  if (!p50Values.length || !p99Values.length) {
-    throw new Error("Cloudflare did not return CPU P50/P99 quantiles for the selected window");
-  }
-
-  // Cloudflare GraphQL CPU quantiles are expressed in microseconds; publish ms.
-  const maxP50Ms = Math.max(...p50Values) / 1000;
-  const maxP99Ms = Math.max(...p99Values) / 1000;
+  const bucketLimit = options.bucketLimit ?? METRIC_BUCKET_LIMIT;
   const thresholds = {
-    maxP50Ms: options.maxP50Ms ?? 20,
-    maxP99Ms: options.maxP99Ms ?? 50,
+    aggregateP50Ms: options.aggregateP50Ms ?? 20,
+    aggregateP99Ms: options.aggregateP99Ms ?? 50,
+    maxBucketP99Ms: options.maxBucketP99Ms ?? 50,
     maxErrors: options.maxErrors ?? 0,
   };
 
+  if (!Array.isArray(aggregateRows) || aggregateRows.length !== 1) {
+    throw new Error("Cloudflare did not return exactly one whole-window aggregate metrics row");
+  }
+  if (!Array.isArray(bucketRows) || bucketRows.length === 0) {
+    throw new Error("Cloudflare returned no per-bucket Workers invocation metric rows for the selected window");
+  }
+  if (!Number.isInteger(bucketLimit) || bucketLimit < 1) {
+    throw new Error("Metric bucket row limit must be a positive integer");
+  }
+  if (bucketRows.length >= bucketLimit) {
+    throw new Error(
+      `Cloudflare returned ${bucketRows.length} bucket rows at the ${bucketLimit}-row limit; completeness cannot be proven`,
+    );
+  }
+
+  const aggregate = aggregateRows[0];
+  const requests = requiredMetricNumber(aggregate.sum?.requests, "whole-window request count");
+  const errors = requiredMetricNumber(aggregate.sum?.errors, "whole-window error count");
+  const aggregateP50Ms = requiredMetricNumber(
+    aggregate.quantiles?.cpuTimeP50,
+    "whole-window CPU P50",
+  ) / 1000;
+  const aggregateP99Ms = requiredMetricNumber(
+    aggregate.quantiles?.cpuTimeP99,
+    "whole-window CPU P99",
+  ) / 1000;
+
+  if (requests < minimumRequests) {
+    throw new Error(
+      `Cloudflare metrics sample is insufficient: ${requests} requests; at least ${minimumRequests} required`,
+    );
+  }
   if (errors > thresholds.maxErrors) {
     throw new Error(`Production Worker invocation errors exceeded threshold: ${errors}`);
   }
-  if (maxP50Ms > thresholds.maxP50Ms) {
-    throw new Error(`Production Worker max bucket CPU P50 exceeded threshold: ${maxP50Ms.toFixed(3)} ms`);
+  if (aggregateP50Ms > thresholds.aggregateP50Ms) {
+    throw new Error(
+      `Production Worker whole-window CPU P50 exceeded threshold: ${aggregateP50Ms.toFixed(3)} ms`,
+    );
   }
-  if (maxP99Ms > thresholds.maxP99Ms) {
-    throw new Error(`Production Worker max bucket CPU P99 exceeded threshold: ${maxP99Ms.toFixed(3)} ms`);
+  if (aggregateP99Ms > thresholds.aggregateP99Ms) {
+    throw new Error(
+      `Production Worker whole-window CPU P99 exceeded threshold: ${aggregateP99Ms.toFixed(3)} ms`,
+    );
+  }
+
+  let bucketRequests = 0;
+  let bucketErrors = 0;
+  let maxBucketCpuP50Ms = 0;
+  let maxBucketCpuP99Ms = 0;
+  let bucketsAboveP50Threshold = 0;
+  let requestsInBucketsAboveP50Threshold = 0;
+
+  for (const [index, row] of bucketRows.entries()) {
+    const rowRequests = requiredMetricNumber(
+      row.sum?.requests,
+      `bucket[${index}] request count`,
+    );
+    const rowErrors = requiredMetricNumber(
+      row.sum?.errors,
+      `bucket[${index}] error count`,
+    );
+    const bucketP50Ms = requiredMetricNumber(
+      row.quantiles?.cpuTimeP50,
+      `bucket[${index}] CPU P50`,
+    ) / 1000;
+    const bucketP99Ms = requiredMetricNumber(
+      row.quantiles?.cpuTimeP99,
+      `bucket[${index}] CPU P99`,
+    ) / 1000;
+
+    bucketRequests += rowRequests;
+    bucketErrors += rowErrors;
+    maxBucketCpuP50Ms = Math.max(maxBucketCpuP50Ms, bucketP50Ms);
+    maxBucketCpuP99Ms = Math.max(maxBucketCpuP99Ms, bucketP99Ms);
+
+    if (bucketP50Ms > thresholds.aggregateP50Ms) {
+      bucketsAboveP50Threshold += 1;
+      requestsInBucketsAboveP50Threshold += rowRequests;
+    }
+  }
+
+  if (bucketRequests !== requests || bucketErrors !== errors) {
+    throw new Error(
+      `Cloudflare bucket totals do not match whole-window totals (requests ${bucketRequests}/${requests}, errors ${bucketErrors}/${errors}); bucket completeness cannot be proven`,
+    );
+  }
+  if (maxBucketCpuP99Ms > thresholds.maxBucketP99Ms) {
+    throw new Error(
+      `Production Worker max bucket CPU P99 exceeded threshold: ${maxBucketCpuP99Ms.toFixed(3)} ms`,
+    );
   }
 
   return {
     requests,
     errors,
-    maxBucketCpuP50Ms: Number(maxP50Ms.toFixed(3)),
-    maxBucketCpuP99Ms: Number(maxP99Ms.toFixed(3)),
-    thresholds,
-    aggregation: "maximum quantile across returned time buckets (conservative)",
+    bucketCount: bucketRows.length,
+    aggregateCpuP50Ms: roundMs(aggregateP50Ms),
+    aggregateCpuP99Ms: roundMs(aggregateP99Ms),
+    maxBucketCpuP50Ms: roundMs(maxBucketCpuP50Ms),
+    maxBucketCpuP99Ms: roundMs(maxBucketCpuP99Ms),
+    bucketsAboveP50Threshold,
+    requestsInBucketsAboveP50Threshold,
+    thresholds: {
+      minimumRequests,
+      ...thresholds,
+      bucketRowLimit: bucketLimit,
+    },
+    aggregation: "whole-window aggregate CPU P50/P99; maximum per-bucket CPU P99 retained as a tail guard",
+    bucketCompleteness: "bucket request/error totals must match whole-window totals; reaching the row limit fails closed",
   };
 }
 
@@ -143,11 +241,19 @@ async function cloudflareMetrics(token, accountId, workerName) {
   if (!response.ok || !payload || payload.errors?.length) {
     throw new Error(`Cloudflare read-only metrics query failed with HTTP ${response.status}`);
   }
-  const rows = payload.data?.viewer?.accounts?.[0]?.workersInvocationsAdaptive;
+  const account = payload.data?.viewer?.accounts?.[0];
+  if (!account) {
+    throw new Error("Cloudflare returned no account metrics for the configured account ID");
+  }
+  const summary = summarizeWorkerMetricRows(
+    account.aggregateMetrics,
+    account.bucketMetrics,
+  );
+
   return {
     start: start.toISOString(),
     end: end.toISOString(),
-    summary: summarizeWorkerMetricRows(rows),
+    summary,
   };
 }
 
