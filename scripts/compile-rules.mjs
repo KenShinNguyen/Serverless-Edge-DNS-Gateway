@@ -11,6 +11,11 @@ import {
   OFFSET_MASK,
   validateEdnsV1Buffer,
 } from "../src/rules-binary-format.ts";
+import {
+  RULE_SHARD_ALGORITHM,
+  RULE_SHARD_COUNT,
+  shardIdForRuleDomain,
+} from "../src/rules-sharding.ts";
 
 const ROOT = resolve(process.cwd());
 const OUT_DIR = resolve(process.env.RULES_OUT_DIR || "dist/rules");
@@ -85,6 +90,67 @@ function buildBinary(effective) {
   return { buffer, rules, poolBytes };
 }
 
+function buildShardArtifacts(effective, snapshotSha256) {
+  const groups = new Map();
+  const global = new Map();
+
+  for (const [domain, action] of effective) {
+    const shardId = shardIdForRuleDomain(domain);
+    const target = shardId === "global"
+      ? global
+      : (groups.get(shardId) ?? new Map());
+    target.set(domain, action);
+    if (shardId !== "global" && !groups.has(shardId)) groups.set(shardId, target);
+  }
+
+  const output = [];
+  const descriptorFor = (id, entries) => {
+    const { buffer } = buildBinary(entries);
+    const validated = validateEdnsV1Buffer(buffer);
+    const sha256 = createHash("sha256").update(validated.bytes).digest("hex");
+    const object = `shards/${id}-${sha256}.bin`;
+    return {
+      descriptor: {
+        key: `compiled/shards/${snapshotSha256}/${id}-${sha256}.bin`,
+        sha256,
+        rules: validated.count,
+        binaryBytes: validated.bytes.byteLength,
+        object,
+      },
+      bytes: validated.bytes,
+    };
+  };
+
+  const globalArtifact = global.size
+    ? descriptorFor("global", global)
+    : null;
+  if (globalArtifact) output.push(globalArtifact);
+
+  const entries = {};
+  for (const shardId of [...groups.keys()].sort()) {
+    const artifact = descriptorFor(shardId, groups.get(shardId));
+    entries[shardId] = artifact.descriptor;
+    output.push(artifact);
+  }
+
+  const totalShardRules = (globalArtifact?.descriptor.rules ?? 0)
+    + Object.values(entries).reduce((sum, entry) => sum + entry.rules, 0);
+  if (totalShardRules !== effective.size) {
+    throw new Error(`Shard partition mismatch: expected ${effective.size}, got ${totalShardRules}`);
+  }
+
+  return {
+    metadata: {
+      format: "EDNS-v1-sharded",
+      algorithm: RULE_SHARD_ALGORITHM,
+      shardCount: RULE_SHARD_COUNT,
+      global: globalArtifact?.descriptor ?? null,
+      entries,
+    },
+    artifacts: output,
+  };
+}
+
 function evaluateForCanary(domain, effective) {
   let candidate = domain;
   while (true) {
@@ -123,9 +189,20 @@ async function main() {
 
   const sha256 = createHash("sha256").update(validated.bytes).digest("hex");
   const fileName = `rules-${sha256}.bin`;
+  const sharded = buildShardArtifacts(effective, sha256);
 
   await mkdir(OUT_DIR, { recursive: true });
+  await mkdir(resolve(OUT_DIR, "shards"), { recursive: true });
   await writeFile(resolve(OUT_DIR, fileName), validated.bytes);
+  for (const artifact of sharded.artifacts) {
+    await writeFile(resolve(OUT_DIR, artifact.descriptor.object), artifact.bytes);
+  }
+
+  const shardDescriptors = [
+    ...(sharded.metadata.global ? [sharded.metadata.global] : []),
+    ...Object.values(sharded.metadata.entries),
+  ];
+  const shardSizes = shardDescriptors.map((entry) => entry.binaryBytes);
 
   const stats = {
     format: "EDNS-v1",
@@ -135,6 +212,15 @@ async function main() {
     blockRules: [...effective.values()].filter((v) => v === "BLOCK").length,
     poolBytes,
     binaryBytes: validated.bytes.byteLength,
+    sharding: {
+      algorithm: RULE_SHARD_ALGORITHM,
+      shardCount: RULE_SHARD_COUNT,
+      nonEmptyShardCount: Object.keys(sharded.metadata.entries).length,
+      globalRules: sharded.metadata.global?.rules ?? 0,
+      shardObjectCount: shardDescriptors.length,
+      totalShardBinaryBytes: shardSizes.reduce((sum, bytes) => sum + bytes, 0),
+      maxShardBinaryBytes: shardSizes.length ? Math.max(...shardSizes) : 0,
+    },
     sources: {
       blocklist: BLOCK_FILE.replace(ROOT + "/", ""),
       allowlist: ALLOW_FILE.replace(ROOT + "/", ""),
@@ -153,6 +239,7 @@ async function main() {
     stats: `stats-${sha256}.json`,
     rules: rules.length,
     generatedAt: stats.generatedAt,
+    shards: sharded.metadata,
   }, null, 2) + "\n");
 
   console.log(JSON.stringify(stats, null, 2));

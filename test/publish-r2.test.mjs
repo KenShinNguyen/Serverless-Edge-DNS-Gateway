@@ -141,3 +141,105 @@ test("history entries retain rules metadata", () => {
   const retained = buildRetainedVersions(null, entry(a, "v1", 123), 1);
   assert.deepEqual(retained[0], entry(a, "v1", 123));
 });
+
+
+test("retention preserves optional shard metadata in every retained snapshot", () => {
+  const shards = {
+    format: "EDNS-v1-sharded",
+    algorithm: "fnv1a32-last-two-labels-v1",
+    shardCount: 256,
+    global: null,
+    entries: {
+      "2a": {
+        key: `compiled/shards/${a}/2a-${b}.bin`,
+        sha256: b,
+        rules: 10,
+        binaryBytes: 256,
+        object: `shards/2a-${b}.bin`,
+      },
+    },
+  };
+  const current = {
+    ...entry(a),
+    shards,
+    history: [{ ...entry(a), shards }, entry(c)],
+  };
+
+  const retained = buildRetainedVersions(current, { ...entry(d), shards: {
+    ...shards,
+    entries: {
+      "2b": {
+        key: `compiled/shards/${d}/2b-${e}.bin`,
+        sha256: e,
+        rules: 10,
+        binaryBytes: 512,
+      },
+    },
+  } }, 3);
+
+  assert.deepEqual(retained.map((item) => item.sha256), [d, a, c]);
+  assert.ok(retained[0].shards.entries["2b"]);
+  assert.ok(retained[1].shards.entries["2a"]);
+});
+
+test("history healing treats any missing retained shard object as a stale snapshot", async () => {
+  const shards = {
+    format: "EDNS-v1-sharded",
+    algorithm: "fnv1a32-last-two-labels-v1",
+    shardCount: 256,
+    global: null,
+    entries: {
+      "2a": {
+        key: `compiled/shards/${a}/2a-${b}.bin`,
+        sha256: b,
+        rules: 10,
+        binaryBytes: 256,
+      },
+    },
+  };
+  const mockS3 = {
+    async send(command) {
+      const key = command.input.Key;
+      if (key.includes("/shards/")) {
+        const error = new Error("NotFound");
+        error.name = "NotFound";
+        error.$metadata = { httpStatusCode: 404 };
+        throw error;
+      }
+      return { ContentLength: 100 };
+    },
+  };
+
+  const healed = await verifyAndHealHistory(
+    mockS3,
+    "dns-compiled-rules",
+    [{ ...entry(a), shards }],
+  );
+  assert.deepEqual(healed, []);
+});
+
+test("newly published pair verification checks every shard ContentLength", async () => {
+  const shards = [{
+    descriptor: { key: `compiled/shards/${a}/2a-${b}.bin` },
+    bytes: Buffer.alloc(256),
+  }];
+  const mockS3 = {
+    async send(command) {
+      const key = command.input.Key;
+      return { ContentLength: key.includes("/shards/") ? 255 : (key.endsWith(".bin") ? 100 : 10) };
+    },
+  };
+
+  await assert.rejects(
+    () => verifyNewlyPublishedPair(
+      mockS3,
+      "dns-compiled-rules",
+      entry(a).key,
+      entry(a).stats,
+      100,
+      10,
+      shards,
+    ),
+    /Shard .* ContentLength mismatch: expected 256, got 255/,
+  );
+});

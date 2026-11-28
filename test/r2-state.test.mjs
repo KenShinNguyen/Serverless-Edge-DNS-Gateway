@@ -33,6 +33,23 @@ function revoked(sha) {
 function manifest(history, revokedList = []) {
   return projectManifestFromHistory(history, revokedList, "2026-11-23T02:00:00.000Z");
 }
+function shardMetadata(snapshotSha, shardSha, bytes = 35) {
+  return {
+    format: "EDNS-v1-sharded",
+    algorithm: "fnv1a32-last-two-labels-v1",
+    shardCount: 256,
+    global: null,
+    entries: {
+      "2a": {
+        key: `compiled/shards/${snapshotSha}/2a-${shardSha}.bin`,
+        sha256: shardSha,
+        rules: 1,
+        binaryBytes: bytes,
+        object: `shards/2a-${shardSha}.bin`,
+      },
+    },
+  };
+}
 function binary() {
   const domain = Buffer.from("example.com");
   const out = Buffer.alloc(16 + 8 + domain.length);
@@ -261,4 +278,74 @@ test("rollback sixth time evicts revoked FIFO oldest record", async () => {
   const result = await rollbackSnapshot(mockR2(objects), "dns-compiled-rules", { targetSha, reason: "sixth rollback" });
   assert.equal(result.revokedEvicted.sha256, a);
   assert.deepEqual(result.manifest.revoked.map((x) => x.sha256), [b, c, f, "1".repeat(64), e]);
+});
+
+
+test("sharded manifests preserve shard metadata and enforce canonical shard keys", () => {
+  const head = { ...entry(a), shards: shardMetadata(a, b, 35) };
+  const m = manifest([head, entry(c)]);
+  assert.deepEqual(m.shards, head.shards);
+  assertManifestInvariants(m);
+
+  const corrupted = structuredClone(m);
+  corrupted.shards.entries["2a"].key = `compiled/shards/${a}/wrong.bin`;
+  assert.throws(() => assertManifestInvariants(corrupted), /invalid .* descriptor fields/);
+});
+
+test("projectManifestFromHistory carries the shard index from the rollback target", async () => {
+  const bytes = binary();
+  const targetSha = createHash("sha256").update(bytes).digest("hex");
+  const target = {
+    ...entry(targetSha),
+    shards: shardMetadata(targetSha, targetSha, bytes.byteLength),
+  };
+  const current = entry(e);
+  const shardKey = target.shards.entries["2a"].key;
+  const objects = new Map([
+    ["compiled/latest.json", Buffer.from(JSON.stringify(manifest([current, target])))],
+    [target.key, bytes],
+    [target.stats, Buffer.from("{}")],
+    [shardKey, bytes],
+  ]);
+
+  const s3 = mockR2(objects);
+  const result = await rollbackSnapshot(s3, "dns-compiled-rules", {
+    targetSha: "previous",
+    reason: "verify shard-aware rollback",
+  });
+  assert.equal(result.status, "rolled_back");
+  assert.deepEqual(result.manifest.shards, target.shards);
+  assert.ok(
+    s3.calls.some((command) =>
+      command.constructor.name === "GetObjectCommand" && command.input.Key === shardKey
+    ),
+    "rollback must verify every target shard before switching latest.json",
+  );
+});
+
+test("rollback refuses a target snapshot when one of its shard objects is corrupt", async () => {
+  const bytes = binary();
+  const targetSha = createHash("sha256").update(bytes).digest("hex");
+  const target = {
+    ...entry(targetSha),
+    shards: shardMetadata(targetSha, targetSha, bytes.byteLength),
+  };
+  const current = entry(e);
+  const shardKey = target.shards.entries["2a"].key;
+  const corrupt = Buffer.from(bytes);
+  corrupt[corrupt.length - 1] ^= 0xff;
+  const objects = new Map([
+    ["compiled/latest.json", Buffer.from(JSON.stringify(manifest([current, target])))],
+    [target.key, bytes],
+    [target.stats, Buffer.from("{}")],
+    [shardKey, corrupt],
+  ]);
+
+  await assert.rejects(
+    () => rollbackSnapshot(mockR2(objects), "dns-compiled-rules", {
+      targetSha: "previous",
+      reason: "reject damaged shard",
+    }),
+    /Shard SHA mismatch/,
+  );
 });

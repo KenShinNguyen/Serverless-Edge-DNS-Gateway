@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { verifyAllHistoryStrict, verifyR2State } from "../scripts/verify-r2-state.mjs";
 import { projectManifestFromHistory } from "../scripts/r2-state.mjs";
 
-function entry(sha, rules = 1) {
+function entry(sha, rules = 1, shards = undefined) {
   return {
     sha256: sha,
     key: `compiled/rules-${sha}.bin`,
@@ -12,6 +12,24 @@ function entry(sha, rules = 1) {
     rules,
     version: "v1",
     generatedAt: "2026-11-23T00:00:00.000Z",
+    ...(shards ? { shards } : {}),
+  };
+}
+function shardMetadata(snapshotSha, shardBytes) {
+  const shardSha = createHash("sha256").update(shardBytes).digest("hex");
+  return {
+    format: "EDNS-v1-sharded",
+    algorithm: "fnv1a32-last-two-labels-v1",
+    shardCount: 256,
+    global: null,
+    entries: {
+      "2a": {
+        key: `compiled/shards/${snapshotSha}/2a-${shardSha}.bin`,
+        sha256: shardSha,
+        rules: 1,
+        binaryBytes: shardBytes.byteLength,
+      },
+    },
   };
 }
 function binary(domainName = "example.com") {
@@ -62,12 +80,20 @@ const sha = createHash("sha256").update(bytes).digest("hex");
 const history = [entry(sha)];
 const manifest = projectManifestFromHistory(history, []);
 
-function objectsFor(m = manifest) {
-  return new Map([
+function objectsFor(m = manifest, binaryBytes = bytes) {
+  const objects = new Map([
     ["compiled/latest.json", Buffer.from(JSON.stringify(m))],
-    [m.history[0].key, bytes],
+    [m.history[0].key, binaryBytes],
     [m.history[0].stats, Buffer.from(JSON.stringify({ sha256: m.sha256, rules: m.rules }))],
   ]);
+  for (const entry of m.history) {
+    const descriptors = [
+      ...(entry.shards?.global ? [entry.shards.global] : []),
+      ...Object.values(entry.shards?.entries ?? {}),
+    ];
+    for (const descriptor of descriptors) objects.set(descriptor.key, binaryBytes);
+  }
+  return objects;
 }
 
 test("strict verifier passes a complete valid state", async () => {
@@ -139,4 +165,40 @@ test("strict verifier is read-only and never sends PUT or DELETE commands", asyn
   await verifyAllHistoryStrict(s3, "bucket", manifest);
   const names = s3.calls.map((command) => command.constructor.name);
   assert.ok(names.every((name) => name === "GetObjectCommand" || name === "HeadObjectCommand"));
+});
+
+
+test("strict verifier checks every shard in addition to the legacy compatibility binary", async () => {
+  const shards = shardMetadata(sha, bytes);
+  const shardedEntry = entry(sha, 1, shards);
+  const shardedManifest = projectManifestFromHistory([shardedEntry], []);
+  const objects = objectsFor(shardedManifest);
+  const s3 = mockR2(objects);
+  const result = await verifyAllHistoryStrict(s3, "bucket", shardedManifest);
+
+  assert.equal(result.status, "PASS");
+  assert.equal(result.verified[0].shardObjects, 1);
+  assert.equal(result.verified[0].shardBinaryBytes, bytes.byteLength);
+  assert.ok(
+    s3.calls.some((command) =>
+      command.constructor.name === "GetObjectCommand"
+      && command.input.Key === shards.entries["2a"].key
+    ),
+  );
+});
+
+test("strict verifier fails when a retained shard has a SHA mismatch", async () => {
+  const shards = shardMetadata(sha, bytes);
+  const shardedEntry = entry(sha, 1, shards);
+  const shardedManifest = projectManifestFromHistory([shardedEntry], []);
+  const objects = objectsFor(shardedManifest);
+  const shardKey = shards.entries["2a"].key;
+  const corrupt = Buffer.from(bytes);
+  corrupt[corrupt.length - 1] ^= 0xff;
+  objects.set(shardKey, corrupt);
+
+  await assert.rejects(
+    () => verifyAllHistoryStrict(mockR2(objects), "bucket", shardedManifest),
+    /shard 2a SHA mismatch/,
+  );
 });

@@ -59,6 +59,7 @@ function normalizeHistoryEntry(entry, label = "history entry") {
     key: `compiled/rules-${entry.sha256}.bin`,
     stats: `compiled/stats-${entry.sha256}.json`,
     rules: entry.rules,
+    ...(entry.shards ? { shards: entry.shards } : {}),
   };
 }
 
@@ -140,9 +141,14 @@ export async function verifyAndHealHistory(s3, bucket, entries) {
   const healed = [];
 
   for (const entry of entries) {
+    const shardDescriptors = [
+      ...(entry.shards?.global ? [entry.shards.global] : []),
+      ...Object.values(entry.shards?.entries ?? {}),
+    ];
     const results = await Promise.allSettled([
       headObject(s3, bucket, entry.key),
       headObject(s3, bucket, entry.stats),
+      ...shardDescriptors.map((descriptor) => headObject(s3, bucket, descriptor.key)),
     ]);
 
     const fatalErrors = [];
@@ -158,7 +164,14 @@ export async function verifyAndHealHistory(s3, bucket, entries) {
         continue;
       }
 
-      if (!Number.isInteger(result.value.ContentLength) || result.value.ContentLength <= 0) {
+      const expectedShard = results.indexOf(result) >= 2
+        ? shardDescriptors[results.indexOf(result) - 2]
+        : null;
+      if (
+        !Number.isInteger(result.value.ContentLength)
+        || result.value.ContentLength <= 0
+        || (expectedShard && result.value.ContentLength !== expectedShard.binaryBytes)
+      ) {
         drop = true;
       }
     }
@@ -182,11 +195,20 @@ export async function verifyNewlyPublishedPair(
   statsKey,
   expectedBinaryBytes,
   expectedStatsBytes,
+  shardArtifacts = [],
 ) {
-  const results = await Promise.allSettled([
-    headObject(s3, bucket, binaryKey),
-    headObject(s3, bucket, statsKey),
-  ]);
+  const expected = [
+    { key: binaryKey, bytes: expectedBinaryBytes, label: "Binary" },
+    { key: statsKey, bytes: expectedStatsBytes, label: "Stats" },
+    ...shardArtifacts.map(({ descriptor, bytes }) => ({
+      key: descriptor.key,
+      bytes: bytes.byteLength,
+      label: `Shard ${descriptor.key}`,
+    })),
+  ];
+  const results = await Promise.allSettled(
+    expected.map(({ key }) => headObject(s3, bucket, key)),
+  );
 
   for (const result of results) {
     if (result.status === "rejected") {
@@ -194,18 +216,14 @@ export async function verifyNewlyPublishedPair(
     }
   }
 
-  const binaryHead = results[0].value;
-  const statsHead = results[1].value;
-
-  if (binaryHead.ContentLength !== expectedBinaryBytes || binaryHead.ContentLength <= 0) {
-    throw new Error(
-      `Binary ContentLength mismatch: expected ${expectedBinaryBytes}, got ${binaryHead.ContentLength}`
-    );
-  }
-  if (statsHead.ContentLength !== expectedStatsBytes || statsHead.ContentLength <= 0) {
-    throw new Error(
-      `Stats ContentLength mismatch: expected ${expectedStatsBytes}, got ${statsHead.ContentLength}`
-    );
+  for (let index = 0; index < expected.length; index++) {
+    const head = results[index].value;
+    const item = expected[index];
+    if (head.ContentLength !== item.bytes || head.ContentLength <= 0) {
+      throw new Error(
+        `${item.label} ContentLength mismatch: expected ${item.bytes}, got ${head.ContentLength}`,
+      );
+    }
   }
 }
 
@@ -256,12 +274,17 @@ function shaFromStatsKey(key) {
   return match?.[1] ?? null;
 }
 
+function snapshotShaFromShardKey(key) {
+  const match = /^compiled\/shards\/([0-9a-f]{64})\//.exec(key);
+  return match?.[1] ?? null;
+}
+
 async function pruneUnpinned(s3, bucket, pinnedSet) {
   const keys = await listCompiledObjects(s3, bucket);
   const deletions = [];
 
   for (const key of keys) {
-    const sha = shaFromRuleKey(key) ?? shaFromStatsKey(key);
+    const sha = shaFromRuleKey(key) ?? shaFromStatsKey(key) ?? snapshotShaFromShardKey(key);
     if (sha && !pinnedSet.has(sha)) deletions.push({ Key: key });
   }
 
@@ -278,6 +301,69 @@ async function pruneUnpinned(s3, bucket, pinnedSet) {
   }
 
   return deleted;
+}
+
+async function readLocalShardArtifacts(outDir, snapshotSha, expectedRules, shards) {
+  if (shards === undefined || shards === null) return [];
+  if (
+    typeof shards !== "object"
+    || shards.format !== "EDNS-v1-sharded"
+    || shards.algorithm !== "fnv1a32-last-two-labels-v1"
+    || shards.shardCount !== 256
+    || !shards.entries
+    || typeof shards.entries !== "object"
+    || Array.isArray(shards.entries)
+  ) {
+    throw new Error("Invalid local shard metadata");
+  }
+
+  const descriptors = [
+    ...(shards.global ? [{ id: "global", ...shards.global }] : []),
+    ...Object.entries(shards.entries).map(([id, descriptor]) => ({ id, ...descriptor })),
+  ];
+  const artifacts = [];
+  let totalRules = 0;
+
+  for (const descriptor of descriptors) {
+    if (
+      !/^(?:global|[0-9a-f]{2})$/.test(descriptor.id)
+      || !SHA_RE.test(descriptor.sha256)
+      || descriptor.key !== `compiled/shards/${snapshotSha}/${descriptor.id}-${descriptor.sha256}.bin`
+      || !Number.isSafeInteger(descriptor.rules)
+      || descriptor.rules <= 0
+      || !Number.isSafeInteger(descriptor.binaryBytes)
+      || descriptor.binaryBytes <= 0
+      || typeof descriptor.object !== "string"
+      || descriptor.object.startsWith("/")
+      || descriptor.object.split("/").includes("..")
+    ) {
+      throw new Error(`Invalid local shard descriptor: ${descriptor.id}`);
+    }
+
+    const bytes = await readFile(resolve(outDir, descriptor.object));
+    const validatedShard = validateEdnsV1Buffer(bytes);
+    const actualSha = createHash("sha256").update(validatedShard.bytes).digest("hex");
+    if (actualSha !== descriptor.sha256) {
+      throw new Error(`Local shard SHA mismatch: ${descriptor.id}`);
+    }
+    if (validatedShard.count !== descriptor.rules) {
+      throw new Error(`Local shard rule count mismatch: ${descriptor.id}`);
+    }
+    if (validatedShard.bytes.byteLength !== descriptor.binaryBytes) {
+      throw new Error(`Local shard byte length mismatch: ${descriptor.id}`);
+    }
+
+    totalRules += validatedShard.count;
+    artifacts.push({ descriptor, bytes: validatedShard.bytes });
+  }
+
+  if (totalRules !== expectedRules) {
+    throw new Error(`Local shard rule total mismatch: expected ${expectedRules}, got ${totalRules}`);
+  }
+  if (artifacts.length === 0 && expectedRules !== 0) {
+    throw new Error("Sharded snapshot has rules but no shard objects");
+  }
+  return artifacts;
 }
 
 async function main() {
@@ -334,6 +420,13 @@ async function main() {
     throw new Error(`Local binary SHA mismatch: manifest=${localLatest.sha256}, actual=${actualSha}`);
   }
 
+  const shardArtifacts = await readLocalShardArtifacts(
+    outDir,
+    actualSha,
+    validated.count,
+    localLatest.shards,
+  );
+
   const version = process.env.RULE_VERSION || process.env.GITHUB_SHA || actualSha;
   const generatedAt = localStats.generatedAt || new Date().toISOString();
   const newEntry = {
@@ -343,6 +436,7 @@ async function main() {
     key: binaryKey,
     stats: statsKey,
     rules: validated.count,
+    ...(localLatest.shards ? { shards: localLatest.shards } : {}),
   };
 
   if (dryRun) {
@@ -354,6 +448,9 @@ async function main() {
       statsKey,
       binaryBytes: validated.bytes.byteLength,
       sha256: actualSha,
+      shardObjects: shardArtifacts.length,
+      shardRules: shardArtifacts.reduce((sum, item) => sum + item.descriptor.rules, 0),
+      shardBinaryBytes: shardArtifacts.reduce((sum, item) => sum + item.bytes.byteLength, 0),
       retentionLimit,
       plannedRetention: buildRetainedVersions(null, newEntry, retentionLimit),
     }, null, 2));
@@ -386,7 +483,11 @@ async function main() {
     return;
   }
 
-  if (current?.sha256 === actualSha) {
+  // A pre-sharding snapshot can have the same legacy binary SHA. In that case
+  // we must still publish its shard objects and atomically add shard metadata.
+  const sameShardLayout = JSON.stringify(current?.shards ?? null)
+    === JSON.stringify(localLatest.shards ?? null);
+  if (current?.sha256 === actualSha && (!localLatest.shards || sameShardLayout)) {
     validateKey(current.key ?? binaryKey, actualSha);
     await headObject(s3, bucket, binaryKey);
     console.log(JSON.stringify({ status: "unchanged", sha256: actualSha, key: binaryKey }, null, 2));
@@ -408,6 +509,9 @@ async function main() {
   }
 
   await putObject(s3, bucket, binaryKey, validated.bytes, "application/octet-stream");
+  for (const artifact of shardArtifacts) {
+    await putObject(s3, bucket, artifact.descriptor.key, artifact.bytes, "application/octet-stream");
+  }
   const statsBody = Buffer.from(JSON.stringify({
     ...localStats,
     sha256: actualSha,
@@ -424,6 +528,7 @@ async function main() {
     statsKey,
     validated.bytes.byteLength,
     statsBody.byteLength,
+    shardArtifacts,
   );
 
   // FIX 2: canonical projection preserves the existing revoked ledger.

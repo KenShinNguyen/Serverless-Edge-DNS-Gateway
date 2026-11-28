@@ -27,6 +27,7 @@ export function projectManifestFromHistory(history, revoked = [], publishedAt = 
     rules: head.rules,
     version: head.version,
     generatedAt: head.generatedAt,
+    ...(head.shards ? { shards: head.shards } : {}),
     publishedAt,
     history: [...history],
     revoked: [...revoked],
@@ -47,16 +48,77 @@ async function putManifest(s3, bucket, manifest) {
 }
 async function head(s3, bucket, key) { return s3.send(new HeadObjectCommand({ Bucket: bucket, Key: key })); }
 async function getBytes(s3, bucket, key) { return bodyBytes((await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }))).Body); }
+
+function listShardDescriptors(shards) {
+  if (!shards) return [];
+  return [
+    ...(shards.global ? [{ id: "global", ...shards.global }] : []),
+    ...Object.entries(shards.entries ?? {}).map(([id, descriptor]) => ({ id, ...descriptor })),
+  ];
+}
+
+async function verifyShardSet(s3, bucket, snapshot) {
+  if (!snapshot.shards) return { shardObjects: 0, shardBinaryBytes: 0 };
+  let shardRules = 0;
+  let shardBinaryBytes = 0;
+  const descriptors = listShardDescriptors(snapshot.shards);
+
+  for (const descriptor of descriptors) {
+    const bytes = await getBytes(s3, bucket, descriptor.key);
+    const validated = validateEdnsV1Buffer(bytes);
+    const actualSha = createHash("sha256").update(validated.bytes).digest("hex");
+    if (actualSha !== descriptor.sha256) {
+      throw new Error(`Shard SHA mismatch for ${descriptor.id}: expected ${descriptor.sha256}, got ${actualSha}`);
+    }
+    if (validated.count !== descriptor.rules) {
+      throw new Error(`Shard rule count mismatch for ${descriptor.id}: manifest=${descriptor.rules}, binary=${validated.count}`);
+    }
+    if (validated.bytes.byteLength !== descriptor.binaryBytes) {
+      throw new Error(`Shard byte length mismatch for ${descriptor.id}: manifest=${descriptor.binaryBytes}, binary=${validated.bytes.byteLength}`);
+    }
+    shardRules += validated.count;
+    shardBinaryBytes += validated.bytes.byteLength;
+  }
+
+  if (shardRules !== snapshot.rules) {
+    throw new Error(`Shard set rule count mismatch: manifest=${snapshot.rules}, shards=${shardRules}`);
+  }
+  return { shardObjects: descriptors.length, shardBinaryBytes };
+}
 async function pruneUnpinned(s3, bucket, pinned) {
-  const response = await s3.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: "compiled/", MaxKeys: 1000 }));
-  const objects = (response.Contents ?? []).map((x) => x.Key).filter(Boolean).filter((key) => {
-    const m = /^compiled\/(?:rules|stats)-([0-9a-f]{64})\.(?:bin|json)$/.exec(key);
-    return m && !pinned.has(m[1]);
+  const keys = [];
+  let ContinuationToken;
+  do {
+    const response = await s3.send(new ListObjectsV2Command({
+      Bucket: bucket,
+      Prefix: "compiled/",
+      ContinuationToken,
+      MaxKeys: 1000,
+    }));
+    keys.push(...(response.Contents ?? []).map((item) => item.Key).filter(Boolean));
+    ContinuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+  } while (ContinuationToken);
+
+  const objects = keys.filter((key) => {
+    const immutableMatch = /^compiled\/(?:rules|stats)-([0-9a-f]{64})\.(?:bin|json)$/.exec(key);
+    const shardMatch = /^compiled\/shards\/([0-9a-f]{64})\//.exec(key);
+    const snapshotSha = immutableMatch?.[1] ?? shardMatch?.[1];
+    return snapshotSha && !pinned.has(snapshotSha);
   }).map((Key) => ({ Key }));
   if (!objects.length) return 0;
-  await s3.send(new DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: objects, Quiet: true } }));
-  return objects.length;
+
+  let deleted = 0;
+  for (let offset = 0; offset < objects.length; offset += 1000) {
+    const batch = objects.slice(offset, offset + 1000);
+    await s3.send(new DeleteObjectsCommand({
+      Bucket: bucket,
+      Delete: { Objects: batch, Quiet: true },
+    }));
+    deleted += batch.length;
+  }
+  return deleted;
 }
+
 function audit() {
   return { actor: process.env.GITHUB_ACTOR || process.env.USER || "unknown", runId: process.env.GITHUB_RUN_ID || "local", runAttempt: process.env.GITHUB_RUN_ATTEMPT || "1", eventName: process.env.GITHUB_EVENT_NAME || "manual" };
 }
@@ -73,6 +135,7 @@ export async function rollbackSnapshot(s3, bucket, { targetSha = "previous", rea
   const actualSha = createHash("sha256").update(validated.bytes).digest("hex");
   if (actualSha !== target.sha256) throw new Error(`Rollback target SHA mismatch: expected ${target.sha256}, got ${actualSha}`);
   if (validated.count !== target.rules) throw new Error(`Rollback target rule count mismatch: manifest=${target.rules}, binary=${validated.count}`);
+  await verifyShardSet(s3, bucket, target);
   const statsHead = await head(s3, bucket, target.stats);
   if (!Number.isInteger(statsHead.ContentLength) || statsHead.ContentLength <= 0) throw new Error(`Rollback target stats missing/empty: ${target.stats}`);
   const history = [target, ...current.history.filter((x) => x.sha256 !== current.sha256 && x.sha256 !== target.sha256)].slice(0, retentionLimit);
