@@ -20,6 +20,10 @@ const reportScript = await readFile(
   resolve(root, "scripts/staging-worker-cpu-report.mjs"),
   "utf8",
 );
+const stagingConfig = await readFile(
+  resolve(root, "wrangler.staging.jsonc"),
+  "utf8",
+);
 
 function row({
   requests = 25,
@@ -182,4 +186,13 @@ test("staging workflow is manual-only and has no deploy, publish or production-g
   assert.match(reportScript, /workersInvocationsAdaptive/);
   assert.doesNotMatch(reportScript, /mutation\s+[A-Za-z_]/);
   assert.doesNotMatch(reportScript, /method:\s*"(?:PUT|PATCH|DELETE)"/);
+});
+
+
+test("staging Wrangler config is isolated from the production Worker and R2 bucket", () => {
+  assert.match(stagingConfig, /"name":\s*"serverless-edge-dns-gateway-staging"/);
+  assert.match(stagingConfig, /"workers_dev":\s*true/);
+  assert.match(stagingConfig, /"binding":\s*"RULES_BUCKET"/);
+  assert.match(stagingConfig, /"bucket_name":\s*"dns-compiled-rules-staging"/);
+  assert.doesNotMatch(stagingConfig, /"bucket_name":\s*"dns-compiled-rules"/);
 });
