@@ -66,3 +66,10 @@ A legacy snapshot without **shards** remains a valid history entry. A same-SHA t
 - Release: deploy a dual-reader Worker before publishing a sharded manifest. Keep the old monolithic snapshot and a documented rollback route. Production publish/deploy requires a separately approved change window.
 
 Do not use a successful local compile or Node benchmark as a production PASS. Keep the release HOLD until fresh Worker measurements show the agreed Free-plan CPU criteria and no relevant DNS regressions.
+
+
+## Cold-start failure semantics and memory
+
+A configured R2 snapshot is not equivalent to an empty ruleset. If an isolate cannot load and verify the selected shard and has no previously verified snapshot to consult, the runtime returns `UNAVAILABLE`; the DNS handler responds with **SERVFAIL** and `Cache-Control: no-store`. It must not silently turn an integrity/load failure into `PASS`. If a verified previous snapshot exists, it remains the fallback. An absent shard descriptor in a valid manifest remains an authoritative empty result.
+
+Use `npm run measure:memory` after `npm run compile-rules` to estimate the Node memory footprint of (a) one previous monolithic table plus (b) all active sharded tables loaded. The script reports `heapUsed`, `external`, `arrayBuffers`, and RSS deltas after forced GC where available. This is a directional Node process estimate, **not Cloudflare isolate memory evidence**; staging measurements remain mandatory.
