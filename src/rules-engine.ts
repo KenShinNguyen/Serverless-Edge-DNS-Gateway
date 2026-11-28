@@ -320,8 +320,8 @@ export class RuleSnapshotManager {
       if (this.pending === candidate) {
         this.active = candidate;
         this.pending = null;
+        this.lastError = null;
       }
-      this.lastError = null;
       return result;
     } catch (error) {
       this.lastError = error instanceof Error
