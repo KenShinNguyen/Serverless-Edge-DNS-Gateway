@@ -432,3 +432,90 @@ test('a shard that fails after promotion falls back to the previous snapshot', a
   assert.equal(await manager.evaluate('other.net', replacement, ctx()), 'BLOCK');
   assert.equal(await manager.evaluate('ads.example.com', replacement, ctx()), 'BLOCK');
 });
+
+
+test('cold-start missing sharded object returns UNAVAILABLE instead of PASS', async () => {
+  const manager = new RuleSnapshotManager();
+  const bucket = await makeShardedBucket([['ads.example.com', 'BLOCK']]);
+  const shardId = shardIdForRuleDomain('ads.example.com');
+  const descriptor = bucket.manifest.shards.entries[shardId];
+  bucket.objects.delete(descriptor.key);
+
+  assert.equal(
+    await manager.evaluate('ads.example.com', bucket, ctx()),
+    'UNAVAILABLE',
+  );
+  assert.equal(manager.getHealth().status, 'degraded');
+  assert.equal(manager.getHealth().active, false);
+});
+
+test('cold-start corrupt sharded object returns UNAVAILABLE instead of PASS', async () => {
+  const manager = new RuleSnapshotManager();
+  const bucket = await makeShardedBucket([['ads.example.com', 'BLOCK']]);
+  const shardId = shardIdForRuleDomain('ads.example.com');
+  const descriptor = bucket.manifest.shards.entries[shardId];
+  const bytes = bucket.objects.get(descriptor.key);
+  bytes[bytes.length - 1] ^= 0xff;
+
+  assert.equal(
+    await manager.evaluate('ads.example.com', bucket, ctx()),
+    'UNAVAILABLE',
+  );
+  assert.equal(manager.getHealth().status, 'degraded');
+});
+
+test('Worker returns DNS SERVFAIL when a cold isolate cannot verify its first shard', async () => {
+  const isolatedWorker = (await import(`../src/index.ts?cold-shard-unavailable=${Date.now()}-${Math.random()}`)).default;
+  const bucket = await makeShardedBucket([['ads.example.com', 'BLOCK']]);
+  const shardId = shardIdForRuleDomain('ads.example.com');
+  const descriptor = bucket.manifest.shards.entries[shardId];
+  bucket.objects.delete(descriptor.key);
+
+  let upstreamCalls = 0;
+  globalThis.fetch = async () => {
+    upstreamCalls += 1;
+    return new Response(
+      response({ answers: [record({ ttl: 60, rdata: [93, 184, 216, 34] })] }),
+      { status: 200 },
+    );
+  };
+
+  const result = await isolatedWorker.fetch(
+    new Request('https://dns.example.workers.dev/dns-query', {
+      method: 'POST',
+      body: query({ questions: [{ name: 'ads.example.com', type: 1 }] }),
+      headers: { 'CF-Connecting-IP': '203.0.113.9' },
+    }),
+    { RULES_BUCKET: bucket },
+    ctx(),
+  );
+
+  assert.equal(result.status, 200);
+  assert.equal(result.headers.get('content-type'), 'application/dns-message');
+  assert.equal(result.headers.get('cache-control'), 'no-store');
+  assert.equal(result.headers.get('x-rules-snapshot'), 'unavailable');
+  assert.equal(rcodeOf(await result.arrayBuffer()), 2, 'DNS RCODE must be SERVFAIL');
+  assert.equal(upstreamCalls, 0, 'an unverified rules snapshot must never reach upstream');
+});
+
+
+test('failed new shard does not turn a previous PASS into an allow decision', async () => {
+  const manager = new RuleSnapshotManager();
+  const oldBucket = await makeBucket([['unrelated.example', 'BLOCK']]);
+  assert.equal(await manager.evaluate('ads.example.com', oldBucket, ctx()), 'PASS');
+
+  const replacement = await makeShardedBucket([['ads.example.com', 'BLOCK']]);
+  const shardId = shardIdForRuleDomain('ads.example.com');
+  const descriptor = replacement.manifest.shards.entries[shardId];
+  replacement.objects.delete(descriptor.key);
+  manager.nextCheckAt = 0;
+  const tasks = [];
+  await manager.evaluate('ads.example.com', replacement, { waitUntil: (p) => tasks.push(p) });
+  await Promise.all(tasks);
+
+  assert.equal(
+    await manager.evaluate('ads.example.com', replacement, ctx()),
+    'UNAVAILABLE',
+    'an older PASS cannot prove a newly added block rule should be allowed',
+  );
+});

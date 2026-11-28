@@ -150,7 +150,7 @@ test('a bad R2 digest is rejected before Cache API put', async () => {
     };
     const manager = new RuleSnapshotManager();
     const decision = await manager.evaluate('example.com', bucket, { waitUntil() {} });
-    assert.equal(decision, 'PASS');
+    assert.equal(decision, 'UNAVAILABLE');
     assert.equal(putCalls, 0);
     assert.equal(manager.getHealth().status, 'degraded');
     assert.match(manager.getHealth().error, /SHA-256 mismatch/);

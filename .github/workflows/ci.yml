@@ -48,6 +48,21 @@ jobs:
       - name: Compile binary rules
         run: npm run compile-rules
 
+      - name: Measure retained-snapshot Node memory estimate
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          npm run measure:memory | tee artifacts/rule-snapshot-memory.json
+
+      - name: Upload snapshot memory estimate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rule-snapshot-memory-estimate
+          path: artifacts/rule-snapshot-memory.json
+          if-no-files-found: ignore
+          retention-days: 14
+
   shell:
     name: Shell script lint
     runs-on: ubuntu-latest

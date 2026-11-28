@@ -1055,6 +1055,19 @@ async function handleDNSQuery(request, context) {
         ? 'BLOCK'
         : 'PASS';
 
+      if (
+        binaryDecision === 'UNAVAILABLE'
+        && fallbackDecision !== 'BLOCK'
+        && textDecision !== 'BLOCK'
+      ) {
+        // The configured R2 ruleset could not be verified and no trusted
+        // snapshot can safely authorize this name. Preserve known emergency
+        // blocks above; otherwise return SERVFAIL rather than pass upstream.
+        return new Response(buildServfail(query), {
+          headers: dnsHeaders(cors, null, { 'X-Rules-Snapshot': 'unavailable' })
+        });
+      }
+
       if (binaryDecision === 'BLOCK' || fallbackDecision === 'BLOCK' || textDecision === 'BLOCK') {
         return new Response(buildNxdomain(query), {
           headers: dnsHeaders(cors, LOCAL_RESPONSE_TTL, { 'X-Blocked': domain })

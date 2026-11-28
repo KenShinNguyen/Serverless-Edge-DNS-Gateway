@@ -16,7 +16,7 @@ const REVALIDATE_MS = 5 * 60 * 1000;
 const ERROR_COOLDOWN_MS = 60 * 1000;
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 
-export type RuleDecision = "ALLOW" | "BLOCK" | "PASS";
+export type RuleDecision = "ALLOW" | "BLOCK" | "PASS" | "UNAVAILABLE";
 
 export interface RuleMatch {
   decision: Exclude<RuleDecision, "PASS">;
@@ -320,7 +320,9 @@ export class RuleSnapshotManager {
     }
 
     const candidate = this.pending ?? this.active;
-    if (!candidate) return "PASS";
+    // A configured R2 source that has no valid manifest is not an empty ruleset.
+    // Fail closed at the DNS layer so a cold isolate cannot silently bypass rules.
+    if (!candidate) return "UNAVAILABLE";
 
     try {
       const result = await this.evaluateSnapshot(candidate, qname, bucket);
@@ -343,14 +345,19 @@ export class RuleSnapshotManager {
       const fallback = candidate === this.active ? this.previous : this.active;
       if (fallback) {
         try {
-          return await this.evaluateSnapshot(fallback, qname, bucket);
+          const fallbackDecision = await this.evaluateSnapshot(fallback, qname, bucket);
+          // An older snapshot can prove that a name is blocked, but PASS/ALLOW
+          // cannot prove the newer (failed) snapshot would also permit it.
+          // Preserve a known BLOCK; otherwise fail closed with SERVFAIL.
+          if (fallbackDecision === "BLOCK") return "BLOCK";
         } catch (fallbackError) {
           this.lastError = fallbackError instanceof Error
             ? fallbackError.message.slice(0, 160)
             : this.lastError;
         }
       }
-      return "PASS";
+      // No verified decision can safely authorize this query.
+      return "UNAVAILABLE";
     }
   }
 
