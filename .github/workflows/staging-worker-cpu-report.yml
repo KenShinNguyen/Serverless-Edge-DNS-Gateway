@@ -1,0 +1,56 @@
+
+name: Staging Worker CPU Evidence
+
+on:
+  # Manual-only analytics query. This workflow never deploys a Worker or writes R2.
+  workflow_dispatch:
+    inputs:
+      worker_name:
+        description: "Staging Worker name (must end in -staging)"
+        required: true
+        default: "serverless-edge-dns-gateway-staging"
+        type: string
+      lookback_minutes:
+        description: "Measurement window length in minutes (15-720; ends 10 minutes before run)"
+        required: true
+        default: "60"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: staging-worker-cpu-evidence
+  cancel-in-progress: false
+
+jobs:
+  report:
+    name: Read-only staging CPU evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      CLOUDFLARE_READONLY_API_TOKEN: ${{ secrets.CLOUDFLARE_READONLY_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      STAGING_WORKER_NAME: ${{ inputs.worker_name }}
+      STAGING_LOOKBACK_MINUTES: ${{ inputs.lookback_minutes }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Collect Workers Analytics CPU buckets
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          node scripts/staging-worker-cpu-report.mjs | tee artifacts/staging-worker-cpu-report.json
+
+      - name: Upload measurement report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-worker-cpu-evidence
+          path: artifacts/staging-worker-cpu-report.json
+          if-no-files-found: ignore
+          retention-days: 14
