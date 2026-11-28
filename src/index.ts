@@ -762,13 +762,17 @@ function buildRedirectResponse(originalQuery, upstreamResponse, targetDomain) {
   let uOff = 12;
   const uQd = (uv[4] << 8) | uv[5];
   for (let i = 0; i < uQd; i++) {
-    uOff = decodeName(uv, uOff).nextOff + 4;
+    const question = decodeName(uv, uOff);
+    if (question.nextOff < 0 || question.nextOff + 4 > uv.length) return upstreamResponse;
+    uOff = question.nextOff + 4;
   }
 
   const anCount = (uv[6] << 8) | uv[7];
   const ansRecords = [];
   for (let i = 0; i < anCount && uOff < uv.length; i++) {
     const dn = decodeName(uv, uOff);
+    if (dn.nextOff < 0) break;
+    const owner = dn.name;
     uOff = dn.nextOff;
     if (uOff + 10 > uv.length) break;
     const type = (uv[uOff] << 8) | uv[uOff + 1];
@@ -794,7 +798,11 @@ function buildRedirectResponse(originalQuery, upstreamResponse, targetDomain) {
       combined.set(fixed); combined.set(name, 6);
       rdata = combined;
     }
-    ansRecords.push({ type, cls, ttl, rdata });
+    // Preserve the upstream owner name for every answer. The synthetic CNAME
+    // below already maps the original query name to targetDomain; rewriting
+    // every upstream owner to targetDomain corrupts multi-hop chains such as
+    // target CNAME edge.cdn -> edge.cdn A 1.2.3.4.
+    ansRecords.push({ owner, type, cls, ttl, rdata });
     uOff += rdlen;
   }
 
@@ -803,7 +811,10 @@ function buildRedirectResponse(originalQuery, upstreamResponse, targetDomain) {
   const targetWire = encodeDomainName(targetDomain);
   const cnameSize = 2 + 10 + targetWire.length;
   let ansSize = 0;
-  for (const rec of ansRecords) ansSize += targetWire.length + 10 + rec.rdata.length;
+  for (const rec of ansRecords) {
+    const ownerWire = encodeDomainName(rec.owner);
+    ansSize += ownerWire.length + 10 + rec.rdata.length;
+  }
 
   const res = new Uint8Array(oQEnd + cnameSize + ansSize);
   res.set(qv.subarray(0, oQEnd));
@@ -827,7 +838,8 @@ function buildRedirectResponse(originalQuery, upstreamResponse, targetDomain) {
   res.set(targetWire, off); off += targetWire.length;
 
   for (const rec of ansRecords) {
-    res.set(targetWire, off); off += targetWire.length;
+    const ownerWire = encodeDomainName(rec.owner);
+    res.set(ownerWire, off); off += ownerWire.length;
     res[off++] = (rec.type >> 8) & 0xFF; res[off++] = rec.type & 0xFF;
     res[off++] = (rec.cls >> 8) & 0xFF; res[off++] = rec.cls & 0xFF;
     res[off++] = (rec.ttl >> 24) & 0xFF; res[off++] = (rec.ttl >> 16) & 0xFF;
