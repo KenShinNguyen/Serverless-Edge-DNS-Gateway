@@ -34,7 +34,7 @@ A secure, high-performance DNS-over-HTTPS (DoH) proxy running on Cloudflare's gl
 2. Go to the **Actions** tab in your forked repository and click **I understand my workflows, go ahead and enable them**.
 3. Enable `Update DNS Blocklists` and `Delete Old Workflow Runs`. (`Update Filter Lists` is the optional Layer 2 / CGPS workflow — leave it disabled unless you set up the secrets described [below](#-layer-2-cloudflare-gateway-security-filtering-cgps).)
 
-`Update DNS Blocklists` checks its sources every 3 hours, applies minimum-count and maximum-drop guards, then opens or updates a **draft PR**. Review the draft PR, click **Ready for review** to trigger CI, then merge only after all checks pass. It does not push rule changes straight to `main`.
+`Update DNS Blocklists` checks its sources every 3 hours, applies minimum-count and maximum-drop guards, then opens or updates a **draft PR**. Review the draft PR, click **Ready for review** to trigger CI, then merge only after all checks pass. It does not push rule changes straight to `main`. While a rule-review PR is open, scheduled refreshes are skipped so its reviewed HEAD cannot silently move.
 
 The `Compile and Publish Rules to R2` workflow is **manual-only** and defaults to `dry-run`. Choose `publish` explicitly only when you have approved a ruleset and intend to write Production R2.
 
