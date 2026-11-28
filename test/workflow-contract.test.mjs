@@ -9,6 +9,7 @@ const ciPath = resolve(root, ".github/workflows/ci.yml");
 const blocklistWorkflowPath = resolve(root, ".github/workflows/Update_DNS_Blocklists.yml");
 const publishPath = resolve(root, "scripts/publish-r2.mjs");
 const verifyPath = resolve(root, "scripts/verify-r2-state.mjs");
+const readonlyVerifyPath = resolve(root, "scripts/verify-r2-state-readonly.mjs");
 const wranglerPath = resolve(root, "wrangler.jsonc");
 
 const workflow = await readFile(workflowPath, "utf8");
@@ -16,6 +17,7 @@ const ciWorkflow = await readFile(ciPath, "utf8");
 const blocklistWorkflow = await readFile(blocklistWorkflowPath, "utf8");
 const publish = await readFile(publishPath, "utf8");
 const verify = await readFile(verifyPath, "utf8");
+const readonlyVerify = await readFile(readonlyVerifyPath, "utf8");
 const wrangler = JSON.parse(await readFile(wranglerPath, "utf8"));
 
 function runBlocks(source) {
@@ -129,11 +131,26 @@ test("workflow contract: publisher CLI syntax matches the real parser", () => {
 
 test("workflow contract: verifier entrypoint and R2 environment names match source", () => {
   assert.match(verify, /requiredEnv\("R2_ENDPOINT"\)/);
-  assert.match(verify, /process\.env\.R2_BUCKET_NAME/);
+  assert.match(verify, /resolveVerificationBucketName\(\)/);
+  assert.match(verify, /R2_BUCKET_NAME is required/);
+  assert.doesNotMatch(verify, /R2_BUCKET_NAME \|\| "dns-compiled-rules"/);
+  assert.match(readonlyVerify, /requiredEnv\(env, "R2_BUCKET_NAME"\)/);
+  assert.doesNotMatch(readonlyVerify, /R2_BUCKET_NAME \|\| "dns-compiled-rules"/);
   assert.match(verify, /requiredEnv\("R2_ACCESS_KEY_ID"\)/);
   assert.match(verify, /requiredEnv\("R2_SECRET_ACCESS_KEY"\)/);
   assert.match(verify, /process\.exitCode\s*=\s*1/);
   assert.match(stepBlock(workflow, "Verify R2 state"), /node scripts\/verify-r2-state\.mjs/);
+  for (const step of [
+    "Dry-run R2 publisher",
+    "Publish immutable snapshot to R2",
+    "Roll back immutable snapshot in R2",
+    "Unrevoke SHA in R2",
+    "Verify R2 state",
+  ]) {
+    assert.match(stepBlock(workflow, step), /R2_BUCKET_NAME: dns-compiled-rules/);
+  }
+  assert.match(publish, /R2_BUCKET_NAME is required/);
+  assert.doesNotMatch(publish, /R2_BUCKET_NAME \|\| DEFAULT_BUCKET/);
 
   const expected = ["R2_ENDPOINT", "R2_BUCKET_NAME", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "RETENTION_LIMIT"];
   assert.deepEqual(envKeysForStep(workflow, "Verify R2 state"), expected);
