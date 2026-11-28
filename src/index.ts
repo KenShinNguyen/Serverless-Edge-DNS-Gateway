@@ -420,7 +420,7 @@ function minResponseTtl(buf) {
 
 // Response headers for a DNS message, with the freshness lifetime derived from
 // the record TTLs. Caching matters here beyond politeness to the upstream: the
-// Pages free tier bills every request against a 100k/day quota, and without a
+// Workers free tier bills every request against a 100k/day quota, and without a
 // Cache-Control header neither the client nor Cloudflare's edge cache will
 // reuse an answer.
 // `body` is either a response buffer to read TTLs out of, an explicit TTL in
