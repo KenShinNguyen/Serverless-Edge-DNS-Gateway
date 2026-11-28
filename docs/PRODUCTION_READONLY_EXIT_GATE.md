@@ -17,7 +17,7 @@ The workflow performs only these operations:
 | Production DoH endpoint | One DNS-over-HTTPS POST query for `example.com A` | HTTP 200, `application/dns-message`, matching transaction ID/question, RCODE 0 and at least one answer |
 | Production R2 | S3 `GetObject` and `HeadObject` only | Active manifest, binary SHA-256, rule count, byte length, active stats and every retained binary/stat object validate |
 
-The CPU window is the 60 minutes ending 10 minutes before the workflow starts. The Workers Analytics query groups records by **`datetimeMinute`**, not exact `datetime` (second-level timestamps). This produces one-minute buckets rather than allowing a one-request second bucket to define a P50.
+The CPU window is the 60 minutes ending 10 minutes before the workflow starts. The Workers Analytics query groups records by **`datetimeMinute`** and Worker name only. It deliberately omits the `status` dimension because selecting status would split invocations from the same minute into separate rows. This produces one complete one-minute bucket across invocation outcomes rather than treating a status fragment as the minute's sample.
 
 ### CPU metrics and units
 
@@ -45,7 +45,7 @@ Cloudflare's [Workers Metrics GraphQL tutorial](https://developers.cloudflare.co
 
 ## Workers plan and CPU entitlement
 
-The Gate's 20 ms / 50 ms values are observability acceptance thresholds; they are **not** the account's CPU execution limit.
+The Gate's 20 ms / 50 ms values are observability acceptance thresholds; they are **not** the account's CPU execution limit and they are **not** a Workers Free compliance threshold. The separate staging evidence report evaluates the Free-specific 10 ms P99 target and the 80% qualified-minute request-coverage criterion; it does not modify this production Gate.
 
 Cloudflare currently documents a **10 ms CPU limit per request on Workers Free** and a default **30-second CPU limit per request on Workers Paid (Standard)**, configurable up to five minutes. Cloudflare also documents built-in flexibility for infrequent requests that exceed the configured CPU limit; repeated overruns are terminated, and Free-plan CPU exhaustion is surfaced as Error 1102 / `exceededCpu`. Therefore, a rare successful invocation above 10 ms is not sufficient proof that the account is on Paid. Confirm the actual Workers plan and Worker's configured CPU limit in Cloudflare Dashboard → **Workers & Pages → Plans / Worker Settings** before release.
 
