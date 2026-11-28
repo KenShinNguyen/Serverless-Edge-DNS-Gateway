@@ -50,3 +50,10 @@ None of these statuses is a production PASS. The report is intentionally descrip
 A 10-request bucket qualification is a reporting aid, not an execution policy. Do not discard low-sample P99 values. A rare successful request above the Free CPU allowance is not evidence of sustained compliance; conversely, a minute-bucket quantile is not an individual-request trace. Correlate the report with controlled staging runs and Cloudflare's actual invocation outcomes before deciding whether to alter integrity verification or the CPU Gate.
 
 The Worker still performs per-shard SHA-256 verification when a table is first loaded into a given isolate, including a Cache API hit. This report measures end-to-end Worker CPU at the one-minute bucket level; it does not attribute CPU to the SHA-256 operation alone.
+
+
+## Cold-start fault injection and memory prerequisite
+
+Before any staging publish is considered, test a fresh isolate against two staging-only fault fixtures: a missing selected shard and a selected shard with corrupted bytes. With no previous snapshot, the expected DNS result is **SERVFAIL (RCODE 2)**, `Cache-Control: no-store`, and no upstream request. With an already verified previous snapshot, the expected result is the previous snapshot's decision. These tests must not be performed against production R2.
+
+Run `npm run compile-rules` followed by `npm run measure:memory`. Record the Node-only memory estimate for one previous monolithic table plus all active shards as a conservative loaded-shard upper bound. This is not a substitute for measuring Worker isolate memory on staging.
