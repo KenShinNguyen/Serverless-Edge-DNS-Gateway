@@ -1,7 +1,10 @@
 export const LATEST_KEY = "compiled/latest.json";
 export const REVOKED_LIMIT = 5;
+export const RULE_SHARD_COUNT = 256;
+export const RULE_SHARD_ALGORITHM = "fnv1a32-last-two-labels-v1";
 
 const SHA_RE = /^[0-9a-f]{64}$/;
+const SHARD_ID_RE = /^[0-9a-f]{2}$/;
 
 export function validateSha(sha) {
   if (!SHA_RE.test(sha)) throw new Error(`Invalid SHA-256: ${sha}`);
@@ -19,6 +22,72 @@ export function expectedKey(sha) {
 
 export function expectedStats(sha) {
   return `compiled/stats-${sha}.json`;
+}
+
+function assertShardDescriptor(descriptor, snapshotSha, shardId, label) {
+  if (!descriptor || typeof descriptor !== "object" || Array.isArray(descriptor)) {
+    throw new Error(`Manifest invariant failed: invalid ${label} descriptor`);
+  }
+  const expectedPrefix = `compiled/shards/${snapshotSha}/${shardId}-`;
+  if (
+    typeof descriptor.sha256 !== "string"
+    || !SHA_RE.test(descriptor.sha256)
+    || descriptor.key !== `${expectedPrefix}${descriptor.sha256}.bin`
+    || !Number.isSafeInteger(descriptor.rules)
+    || descriptor.rules <= 0
+    || !Number.isSafeInteger(descriptor.binaryBytes)
+    || descriptor.binaryBytes <= 0
+  ) {
+    throw new Error(`Manifest invariant failed: invalid ${label} descriptor fields`);
+  }
+  if (descriptor.object !== undefined && (
+    typeof descriptor.object !== "string"
+    || descriptor.object.startsWith("/")
+    || descriptor.object.split("/").includes("..")
+  )) {
+    throw new Error(`Manifest invariant failed: invalid ${label} local artifact path`);
+  }
+}
+
+function assertShardsMetadata(shards, snapshotSha, expectedRules, label) {
+  if (!shards || typeof shards !== "object" || Array.isArray(shards)) {
+    throw new Error(`Manifest invariant failed: invalid ${label}.shards`);
+  }
+  if (
+    shards.format !== "EDNS-v1-sharded"
+    || shards.algorithm !== RULE_SHARD_ALGORITHM
+    || shards.shardCount !== RULE_SHARD_COUNT
+    || !shards.entries
+    || typeof shards.entries !== "object"
+    || Array.isArray(shards.entries)
+  ) {
+    throw new Error(`Manifest invariant failed: unsupported ${label}.shards schema`);
+  }
+
+  let totalRules = 0;
+  if (shards.global !== null && shards.global !== undefined) {
+    assertShardDescriptor(shards.global, snapshotSha, "global", `${label}.global`);
+    totalRules += shards.global.rules;
+  }
+
+  const seen = new Set();
+  for (const [shardId, descriptor] of Object.entries(shards.entries)) {
+    if (!SHARD_ID_RE.test(shardId) || Number.parseInt(shardId, 16) >= RULE_SHARD_COUNT) {
+      throw new Error(`Manifest invariant failed: invalid ${label} shard id ${shardId}`);
+    }
+    if (seen.has(shardId)) {
+      throw new Error(`Manifest invariant failed: duplicate ${label} shard id ${shardId}`);
+    }
+    seen.add(shardId);
+    assertShardDescriptor(descriptor, snapshotSha, shardId, `${label}.entries[${shardId}]`);
+    totalRules += descriptor.rules;
+  }
+
+  if (totalRules !== expectedRules) {
+    throw new Error(
+      `Manifest invariant failed: ${label} shard rule total ${totalRules} does not match ${expectedRules}`,
+    );
+  }
 }
 
 export function assertManifestInvariants(manifest, retentionLimit = 5) {
@@ -45,12 +114,21 @@ export function assertManifestInvariants(manifest, retentionLimit = 5) {
     assertRules(entry.rules, `history[${i}]`);
     if (typeof entry.version !== "string" || !entry.version) fail(`invalid history[${i}].version`);
     if (typeof entry.generatedAt !== "string" || !entry.generatedAt) fail(`invalid history[${i}].generatedAt`);
+    if (entry.shards !== undefined) {
+      assertShardsMetadata(entry.shards, entry.sha256, entry.rules, `history[${i}]`);
+    }
     historyShas.add(entry.sha256);
   }
 
   const head = manifest.history[0];
   for (const field of ["sha256", "key", "stats", "rules", "version", "generatedAt"]) {
     if (manifest[field] !== head[field]) fail(`top-level ${field} does not match history[0]`);
+  }
+  if (JSON.stringify(manifest.shards ?? null) !== JSON.stringify(head.shards ?? null)) {
+    fail("top-level shards do not match history[0].shards");
+  }
+  if (manifest.shards !== undefined) {
+    assertShardsMetadata(manifest.shards, manifest.sha256, manifest.rules, "manifest");
   }
 
   const revoked = manifest.revoked ?? [];
