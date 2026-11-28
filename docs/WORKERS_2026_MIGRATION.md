@@ -76,3 +76,17 @@ Before production cutover:
 3. Set `ECS_MODE=selective` and populate `ECS_ALLOWLIST` only with domains that genuinely need client-subnet based CDN steering.
 4. Verify `/dns-query/<token>`, Apple profile generation and normal web browsing.
 5. Keep the production Worker baseline frozen while completing post-migration cleanup and parity verification.
+
+
+## Phase 3A — Runtime observability contract
+
+The Worker keeps production deployment frozen while the R2 snapshot health surface is verified as an operational contract.
+
+The authenticated-by-configuration `/debug` route exposes non-secret snapshot state:
+
+- `ready`: an R2 snapshot is active and healthy.
+- `stale`: a previously loaded snapshot remains active after a refresh error.
+- `degraded`: no R2 snapshot is active and the Worker has recorded a load error; the embedded fallback remains available.
+- `sha256` and `ruleCount`: identify the active immutable snapshot without exposing the R2 credentials or account configuration.
+
+Phase 3A tests lock both the healthy and malformed-manifest paths. This is an observability/test gate only; it does not require a production deployment or a production R2 write.

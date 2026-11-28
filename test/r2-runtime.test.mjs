@@ -102,3 +102,61 @@ test('Workers entrypoint honors an R2 ALLOW rule over a broader blocked apex', a
   assert.equal(allowed.headers.get('x-blocked'), null);
   assert.equal(rcodeOf(await allowed.arrayBuffer()), 0);
 });
+
+
+test('debug exposes a ready R2 snapshot health contract after the snapshot loads', async () => {
+  const worker = (await import(`../src/index.ts?debug-r2-ready=${Date.now()}-${Math.random()}`)).default;
+  const bucket = await makeBucket([
+    ['ads.example', 'BLOCK'],
+    ['good.ads.example', 'ALLOW']
+  ]);
+
+  globalThis.fetch = async () => new Response(
+    response({ answers: [record({ ttl: 60, rdata: [93, 184, 216, 34] })] }),
+    { status: 200 }
+  );
+
+  const res = await worker.fetch(
+    new Request('https://dns.example.workers.dev/debug', { method: 'GET' }),
+    { RULES_BUCKET: bucket, DEBUG_ENABLED: 'true' },
+    ctx()
+  );
+  const body = await res.json();
+
+  assert.equal(res.status, 200);
+  assert.equal(body.r2Snapshot.status, 'ready');
+  assert.equal(body.r2Snapshot.source, 'r2');
+  assert.equal(body.r2Snapshot.active, true);
+  assert.equal(body.r2Snapshot.ruleCount, 2);
+  assert.match(body.r2Snapshot.sha256, /^[0-9a-f]{64}$/);
+  assert.equal(body.r2Snapshot.error, null);
+});
+
+test('debug exposes degraded R2 snapshot health when the manifest is invalid', async () => {
+  const worker = (await import(`../src/index.ts?debug-r2-bad=${Date.now()}-${Math.random()}`)).default;
+  const bucket = {
+    get: async (key) => key === 'compiled/latest.json'
+      ? { json: async () => ({
+          version: '',
+          sha256: '0'.repeat(64),
+          key: 'compiled/rules-deadbeef.bin',
+          rules: 2,
+          generatedAt: '2026-11-27T00:00:00.000Z'
+        }) }
+      : null
+  };
+
+  const res = await worker.fetch(
+    new Request('https://dns.example.workers.dev/debug', { method: 'GET' }),
+    { RULES_BUCKET: bucket, DEBUG_ENABLED: 'true' },
+    ctx()
+  );
+  const body = await res.json();
+
+  assert.equal(res.status, 200);
+  assert.equal(body.r2Snapshot.status, 'degraded');
+  assert.equal(body.r2Snapshot.source, 'embedded-fallback');
+  assert.equal(body.r2Snapshot.active, false);
+  assert.equal(body.r2Snapshot.ruleCount, 0);
+  assert.equal(body.r2Snapshot.error, 'Invalid latest.json schema');
+});
