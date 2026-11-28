@@ -77,7 +77,7 @@ test("empty bucket enters negative cooldown", async () => {
   const manager = new RuleSnapshotManager();
 
   const first = await manager.evaluate("ads.example.com", bucket, ctx());
-  assert.equal(first, "PASS");
+  assert.equal(first, "UNAVAILABLE");
 
   await Promise.all(
     Array.from({ length: 10 }, () => manager.evaluate("ads.example.com", bucket, ctx()))
@@ -140,7 +140,7 @@ test("manifest key must be canonical for its SHA before binary fetch", async () 
   bucket.objects.set(`compiled/rules-${wrongSha}.bin`, buffer);
 
   const manager = new RuleSnapshotManager();
-  assert.equal(await manager.evaluate("ads.example.com", bucket, ctx()), "PASS");
+  assert.equal(await manager.evaluate("ads.example.com", bucket, ctx()), "UNAVAILABLE");
   assert.deepEqual(bucket.gets, ["compiled/latest.json"]);
   assert.equal(manager.getHealth().status, "degraded");
 });
