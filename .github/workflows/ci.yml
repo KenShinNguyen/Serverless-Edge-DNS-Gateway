@@ -13,10 +13,7 @@ on:
   pull_request:
   push:
     branches: [main]
-    # Bỏ qua commit "Auto-update: blocklists and allowlists" (3 giờ/lần):
-    # chúng chỉ đụng rules/*.txt, không ảnh hưởng code.
     paths-ignore:
-      - 'rules/**'
       - '**.md'
   workflow_dispatch:
 
