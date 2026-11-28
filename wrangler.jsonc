@@ -18,9 +18,9 @@
     "logs": {
       "enabled": true,
       "invocation_logs": false,
-      "head_sampling_rate": 0.05,
-      "redact_query_string": true
-    }
+      "head_sampling_rate": 0.05
+    },
+    "redact_query_string": true
   },
   "vars": {
     "ECS_MODE": "selective",
