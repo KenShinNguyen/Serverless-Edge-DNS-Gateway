@@ -327,6 +327,19 @@ test('a corrupt replacement shard keeps the previous verified snapshot active', 
   );
   assert.equal(manager.getLoadedVersion(), oldVersion);
   assert.equal(manager.getHealth().status, 'stale');
+
+  const failedShardReads = replacement.gets.filter((key) => key === shard.key).length;
+  assert.equal(failedShardReads, 1);
+  assert.equal(
+    await manager.evaluate('ads.example.com', replacement, ctx()),
+    'BLOCK',
+    'the previous verified snapshot keeps serving during the failed-shard cooldown',
+  );
+  assert.equal(
+    replacement.gets.filter((key) => key === shard.key).length,
+    failedShardReads,
+    'the corrupt shard must not be fetched and hashed again on every DNS request',
+  );
 });
 
 
