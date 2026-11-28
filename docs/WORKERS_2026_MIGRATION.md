@@ -129,3 +129,8 @@ Phase 3C hardens the operational path without deploying the Worker or writing to
 - No Production R2 write.
 - No Worker secret or variable changes.
 - Pages rollback and automatic production branch deployment containment remain untouched.
+
+
+## Phase 3D — Production Read-Only Exit Gate
+
+See [Production Read-Only Exit Gate](PRODUCTION_READONLY_EXIT_GATE.md) for the manual-only Worker version pin, DNS smoke, CPU/error metrics, R2 artifact-integrity checks, Wrangler tail procedure, Pages containment checklist, required read-only credentials, and explicit no-mutation guardrails.
