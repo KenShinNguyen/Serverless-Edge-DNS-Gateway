@@ -3,6 +3,8 @@ const GRAPHQL_API = "https://api.cloudflare.com/client/v4/graphql";
 
 export const METRIC_BUCKET_LIMIT = 1000;
 export const DEFAULT_MIN_P50_BUCKET_REQUESTS = 10;
+export const DEFAULT_MIN_FREE_P50_REQUEST_COVERAGE_PERCENT = 80;
+export const DEFAULT_FREE_CPU_P99_LIMIT_MS = 10;
 const MICROSECONDS_PER_MILLISECOND = 1000;
 
 export const STAGING_METRICS_QUERY = [
@@ -16,7 +18,7 @@ export const STAGING_METRICS_QUERY = [
   "      }) {",
   "        sum { requests errors }",
   "        quantiles { cpuTimeP50 cpuTimeP99 }",
-  "        dimensions { datetimeMinute scriptName status }",
+  "        dimensions { datetimeMinute scriptName }",
   "      }",
   "    }",
   "  }",
@@ -136,6 +138,42 @@ export function summarizeStagingWorkerMetricRows(
 
   const qualified = buckets.filter((bucket) => bucket.p50SampleQualified);
   const lowSample = buckets.filter((bucket) => !bucket.p50SampleQualified);
+  const qualifiedP50RequestCount = qualified.reduce(
+    (total, bucket) => total + bucket.requests,
+    0,
+  );
+  const lowSampleRequestCount = lowSample.reduce(
+    (total, bucket) => total + bucket.requests,
+    0,
+  );
+  const qualifiedP50RequestCoveragePercent = requestCount > 0
+    ? Number(((qualifiedP50RequestCount / requestCount) * 100).toFixed(3))
+    : null;
+  const maxCpuP50MsAllBuckets = maxOrNull(buckets.map((bucket) => bucket.cpuP50Ms));
+  const maxCpuP50MsQualifiedBuckets = maxOrNull(qualified.map((bucket) => bucket.cpuP50Ms));
+  const maxCpuP99MsAllBuckets = maxOrNull(buckets.map((bucket) => bucket.cpuP99Ms));
+  const maxCpuP99MsLowSampleBuckets = maxOrNull(lowSample.map((bucket) => bucket.cpuP99Ms));
+  const p99WithinFreeCpuLimit = maxCpuP99MsAllBuckets === null
+    ? null
+    : maxCpuP99MsAllBuckets <= DEFAULT_FREE_CPU_P99_LIMIT_MS;
+  const qualifiedRequestCoverageMeetsFreeMinimum = qualifiedP50RequestCoveragePercent === null
+    ? null
+    : qualifiedP50RequestCoveragePercent >= DEFAULT_MIN_FREE_P50_REQUEST_COVERAGE_PERCENT;
+
+  let freeCpuEvidenceStatus;
+  if (status === "NO_DATA") {
+    freeCpuEvidenceStatus = "NO_DATA";
+  } else if (status !== "MEASURED") {
+    freeCpuEvidenceStatus = "INCOMPLETE";
+  } else if (requestCount === 0) {
+    freeCpuEvidenceStatus = "NO_TRAFFIC";
+  } else if (p99WithinFreeCpuLimit === false) {
+    freeCpuEvidenceStatus = "P99_ABOVE_TARGET";
+  } else if (qualifiedRequestCoverageMeetsFreeMinimum === false) {
+    freeCpuEvidenceStatus = "INSUFFICIENT_QUALIFIED_COVERAGE";
+  } else {
+    freeCpuEvidenceStatus = "WITHIN_OBSERVED_TARGETS";
+  }
 
   return {
     status,
@@ -148,11 +186,26 @@ export function summarizeStagingWorkerMetricRows(
     minP50BucketRequests,
     qualifiedP50BucketCount: qualified.length,
     lowSampleBucketCount: lowSample.length,
+    qualifiedP50RequestCount,
+    lowSampleRequestCount,
+    qualifiedP50RequestCoveragePercent,
+    freeCpuEvidence: {
+      status: freeCpuEvidenceStatus,
+      cpuP99LimitMs: DEFAULT_FREE_CPU_P99_LIMIT_MS,
+      observedMaxCpuP99Ms: maxCpuP99MsAllBuckets,
+      p99WithinLimit: p99WithinFreeCpuLimit,
+      minP50BucketRequests: DEFAULT_MIN_P50_BUCKET_REQUESTS,
+      minQualifiedRequestCoveragePercent: DEFAULT_MIN_FREE_P50_REQUEST_COVERAGE_PERCENT,
+      qualifiedRequestCoveragePercent: qualifiedP50RequestCoveragePercent,
+      qualifiedRequestCoverageMeetsMinimum: qualifiedRequestCoverageMeetsFreeMinimum,
+      requestCoverageBasis: "sum.requests returned by workersInvocationsAdaptive; Analytics may apply adaptive sampling",
+      assessmentType: "measurement-only; not a production release gate or plan entitlement certification",
+    },
     missingCpuMetricBuckets,
-    maxCpuP50MsAllBuckets: maxOrNull(buckets.map((bucket) => bucket.cpuP50Ms)),
-    maxCpuP50MsQualifiedBuckets: maxOrNull(qualified.map((bucket) => bucket.cpuP50Ms)),
-    maxCpuP99MsAllBuckets: maxOrNull(buckets.map((bucket) => bucket.cpuP99Ms)),
-    maxCpuP99MsLowSampleBuckets: maxOrNull(lowSample.map((bucket) => bucket.cpuP99Ms)),
+    maxCpuP50MsAllBuckets,
+    maxCpuP50MsQualifiedBuckets,
+    maxCpuP99MsAllBuckets,
+    maxCpuP99MsLowSampleBuckets,
     units: {
       source: "Cloudflare cpuTimeP50/cpuTimeP99 in microseconds",
       report: "milliseconds",
