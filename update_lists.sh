@@ -10,14 +10,16 @@ ALLOW_OUT="./$DIR/allowlists.txt"
 # Tạo thư mục rules nếu chưa có
 mkdir -p "./$DIR"
 
-# Temp files an toàn
+# Candidate files live beside their destinations so final mv operations are atomic.
 BLOCK_TMP=$(mktemp)
 ALLOW_TMP=$(mktemp)
 STATS_FILE=$(mktemp)
 LAST_CURL_EXIT=$(mktemp)
+ALLOW_CANDIDATE=$(mktemp "$DIR/.allowlists.XXXXXX")
+BLOCK_CANDIDATE=$(mktemp "$DIR/.blocklists.XXXXXX")
 
 # Cleanup khi script exit (không gọi exit trong trap)
-trap 'rm -f "$BLOCK_TMP" "$BLOCK_TMP.sorted" "$ALLOW_TMP" "$STATS_FILE" "$LAST_CURL_EXIT"' INT TERM EXIT
+trap 'rm -f "$BLOCK_TMP" "$BLOCK_TMP.sorted" "$ALLOW_TMP" "$STATS_FILE" "$LAST_CURL_EXIT" "$ALLOW_CANDIDATE" "$BLOCK_CANDIDATE"' INT TERM EXIT
 
 # ============================================================================
 # Chuẩn hoá một dòng filter thành domain trần (adblock, hosts, plain domains).
@@ -296,6 +298,13 @@ if [ "$ALLOW_FAILED_COUNT" -gt 0 ]; then
   echo "⚠️  WARNING: $ALLOW_FAILED_COUNT/$TOTAL_ALLOW_URLS nguồn allowlist thất bại."
 fi
 
+if [ "$ALLOW_FAILED_COUNT" -gt $((TOTAL_ALLOW_URLS / 2)) ]; then
+  echo ""
+  echo "⚠️  ERROR: Hơn nửa số nguồn allowlist thất bại ($ALLOW_FAILED_COUNT/$TOTAL_ALLOW_URLS)." >&2
+  echo "   Giữ nguyên cả hai danh sách hiện tại để tránh mở chặn hoặc chặn nhầm." >&2
+  exit 1
+fi
+
 if [ "$TOTAL_ALLOW_DOMAINS" -lt "$MIN_ALLOW_DOMAINS" ]; then
   echo ""
   echo "⚠️  ERROR: Chỉ trích xuất được $TOTAL_ALLOW_DOMAINS domain allowlist (< $MIN_ALLOW_DOMAINS)"
@@ -305,9 +314,9 @@ fi
 
 echo ""
 echo "🧹 Removing duplicates and sorting allowlists..."
-LC_ALL=C sort -u "$ALLOW_TMP" -o "$ALLOW_OUT"
+LC_ALL=C sort -u "$ALLOW_TMP" -o "$ALLOW_CANDIDATE"
 
-FINAL_ALLOW_COUNT=$(wc -l < "$ALLOW_OUT")
+FINAL_ALLOW_COUNT=$(wc -l < "$ALLOW_CANDIDATE")
 ALLOW_REMOVED=$((TOTAL_ALLOW_DOMAINS - FINAL_ALLOW_COUNT))
 
 echo "✅ Done! Allowlist saved to $ALLOW_OUT"
@@ -321,15 +330,29 @@ fi
 #
 # Edge function vốn đã ưu tiên allowlist khi tra cứu, nên bước này không đổi
 # hành vi lọc — nó chỉ khiến dữ liệu tự nhất quán (một domain không thể vừa
-# bị chặn vừa được mở) và giảm số phần tử phải nạp vào RAM của Pages Function.
+# bị chặn vừa được mở) và giảm số phần tử phải nạp vào RAM của Worker.
+# Build both candidates first. Neither tracked file is replaced until all
+# minimum-count and percentage-drop guards pass.
 # ============================================================================
 echo ""
 echo "🧹 Loại bỏ domain nằm trong allowlist khỏi blocklist..."
-LC_ALL=C comm -23 "$BLOCK_TMP.sorted" "$ALLOW_OUT" > "$BLOCK_OUT"
+LC_ALL=C comm -23 "$BLOCK_TMP.sorted" "$ALLOW_CANDIDATE" > "$BLOCK_CANDIDATE"
 rm -f "$BLOCK_TMP.sorted"
 
-FINAL_BLOCK_COUNT=$(wc -l < "$BLOCK_OUT")
+FINAL_BLOCK_COUNT=$(wc -l < "$BLOCK_CANDIDATE")
 OVERLAP=$((DEDUPED_BLOCK_COUNT - FINAL_BLOCK_COUNT))
+
+MAX_BLOCKLIST_DROP_PERCENT=${MAX_BLOCKLIST_DROP_PERCENT:-20}
+MAX_ALLOWLIST_DROP_PERCENT=${MAX_ALLOWLIST_DROP_PERCENT:-20}
+MIN_FINAL_BLOCK_DOMAINS=${MIN_FINAL_BLOCK_DOMAINS:-50000}
+MIN_FINAL_ALLOW_DOMAINS=${MIN_FINAL_ALLOW_DOMAINS:-100}
+
+node scripts/check-rule-drop.mjs "$BLOCK_OUT" "$BLOCK_CANDIDATE" "$MAX_BLOCKLIST_DROP_PERCENT" "$MIN_FINAL_BLOCK_DOMAINS" "blocklist"
+node scripts/check-rule-drop.mjs "$ALLOW_OUT" "$ALLOW_CANDIDATE" "$MAX_ALLOWLIST_DROP_PERCENT" "$MIN_FINAL_ALLOW_DOMAINS" "allowlist"
+
+# Both candidate files are complete and validated; replace only now.
+mv -f "$ALLOW_CANDIDATE" "$ALLOW_OUT"
+mv -f "$BLOCK_CANDIDATE" "$BLOCK_OUT"
 
 echo "✅ Done! Blocklist saved to $BLOCK_OUT"
 echo "📌 Final count: $FINAL_BLOCK_COUNT unique domains"
