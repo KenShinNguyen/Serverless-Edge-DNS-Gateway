@@ -100,8 +100,8 @@ async function pruneUnpinned(s3, bucket, pinned) {
   } while (ContinuationToken);
 
   const objects = keys.filter((key) => {
-    const immutableMatch = /^compiled\\/(?:rules|stats)-([0-9a-f]{64})\\.(?:bin|json)$/.exec(key);
-    const shardMatch = /^compiled\\/shards\\/([0-9a-f]{64})\\//.exec(key);
+    const immutableMatch = /^compiled\/(?:rules|stats)-([0-9a-f]{64})\\.(?:bin|json)$/.exec(key);
+    const shardMatch = /^compiled\/shards\/([0-9a-f]{64})\//.exec(key);
     const snapshotSha = immutableMatch?.[1] ?? shardMatch?.[1];
     return snapshotSha && !pinned.has(snapshotSha);
   }).map((Key) => ({ Key }));
