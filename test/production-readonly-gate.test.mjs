@@ -257,6 +257,10 @@ test("R2 read-only verifier uses a dedicated credential namespace and only GetOb
   assert.ok(r2Verifier.includes("R2_READONLY_ENDPOINT"));
   assert.ok(r2Verifier.includes("R2_READONLY_ACCESS_KEY_ID"));
   assert.ok(r2Verifier.includes("R2_READONLY_SECRET_ACCESS_KEY"));
+  assert.match(r2Verifier, /requiredEnv\(env, "R2_BUCKET_NAME"\)/);
+  assert.doesNotMatch(r2Verifier, /R2_BUCKET_NAME \|\| "dns-compiled-rules"/);
+  assert.match(workflow, /R2_BUCKET_NAME: dns-compiled-rules/);
+  assert.doesNotMatch(r2Core, /R2_BUCKET_NAME \|\| "dns-compiled-rules"/);
   assert.doesNotMatch(r2Verifier, /R2_ACCESS_KEY_ID|R2_SECRET_ACCESS_KEY/);
   assert.ok(r2Verifier.includes('operations: ["GetObject", "HeadObject"]'));
   assert.doesNotMatch(r2Verifier, /PutObjectCommand|DeleteObjectsCommand|CopyObjectCommand|UploadPartCommand/);
@@ -266,6 +270,8 @@ test("R2 read-only verifier uses a dedicated credential namespace and only GetOb
 test("Cloudflare Workers GraphQL gate groups by minute and checks the microsecond-to-millisecond contract", () => {
   assert.match(deploymentGate, /workersInvocationsAdaptive\(limit: 1000/);
   assert.match(deploymentGate, /datetimeMinute/);
+  assert.match(deploymentGate, /dimensions\s*\{\s*datetimeMinute\s+scriptName\s*\}/);
+  assert.doesNotMatch(deploymentGate, /dimensions\s*\{[^}]*\bstatus\b[^}]*\}/s);
   assert.match(deploymentGate, /MICROSECONDS_PER_MILLISECOND = 1000/);
   assert.ok(deploymentGate.includes("bucketsAboveP50Threshold"));
   assert.ok(deploymentGate.includes("requestsInBucketsAboveP50Threshold"));

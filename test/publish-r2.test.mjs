@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   buildRetainedVersions,
   isMissingObjectError,
+  resolveBucketName,
   resolveRetentionLimit,
   verifyAndHealHistory,
   verifyNewlyPublishedPair,
@@ -50,6 +51,14 @@ test("retentionLimit=2 prunes to exactly two SHAs", () => {
   const retained = buildRetainedVersions(current, entry(f), 2);
   assert.deepEqual(retained.map((x) => x.sha256), [f, a]);
   assert.equal(retained.length, 2);
+});
+
+test("R2 publisher requires an explicit target bucket and never defaults to production", () => {
+  assert.equal(resolveBucketName("dns-compiled-rules-staging"), "dns-compiled-rules-staging");
+  assert.equal(resolveBucketName(" dns-compiled-rules "), "dns-compiled-rules");
+  assert.throws(() => resolveBucketName(undefined), /R2_BUCKET_NAME is required/);
+  assert.throws(() => resolveBucketName(""), /R2_BUCKET_NAME is required/);
+  assert.throws(() => resolveBucketName("   "), /R2_BUCKET_NAME is required/);
 });
 
 test("RETENTION_LIMIT resolver is deterministic and rejects invalid values", () => {

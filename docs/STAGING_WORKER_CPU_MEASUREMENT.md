@@ -5,7 +5,7 @@
 
 This is a measurement-only workflow for collecting Cloudflare Workers Analytics CPU quantiles from a separately deployed staging Worker. It does not certify production, change acceptance thresholds, or return a release-gate PASS.
 
-The report queries one-minute buckets and preserves low-sample buckets. It converts Cloudflare CPU quantiles from microseconds to milliseconds. Wall-clock duration is not queried or substituted for CPU time.
+The report queries one-minute buckets and preserves low-sample buckets. It converts Cloudflare CPU quantiles from microseconds to milliseconds. Wall-clock duration is not queried or substituted for CPU time. The query groups by minute and Worker name only; it does not split one minute by invocation status.
 
 ## Safety boundary
 
@@ -43,11 +43,21 @@ The workflow uploads staging-worker-cpu-report.json as an artifact. Report statu
 - INCOMPLETE: the 1,000-row limit was reached or one or more CPU quantiles were missing.
 - NO_DATA: no rows were returned.
 
-None of these statuses is a production PASS. The report is intentionally descriptive: it records request/error totals, each minute bucket, max P50 across all buckets, max P50 for buckets with at least 10 requests, max P99 across all buckets, and max P99 among low-sample buckets.
+The query requests exactly the `datetimeMinute` and `scriptName` dimensions. It deliberately omits `status`: status is also a Workers Analytics dimension, and selecting it would split invocations from the same minute into separate rows. The minimum-10-request qualification must apply to a complete minute across invocation statuses, not to a status fragment.
+
+The report includes request/error totals, all minute buckets, P50/P99 quantiles, the request count in qualified (at least 10 request) minute buckets, and the percentage of returned request volume represented by those qualified buckets. It also reports `freeCpuEvidence` separately from the top-level report status:
+
+- P99 target: maximum `cpuTimeP99` across **all** minute buckets, including low-sample buckets, must be **≤ 10 ms**.
+- P50 sample coverage: at least **80%** of the returned request count must belong to minute buckets with at least **10 requests**. The report calculates the maximum P50 over those qualified minute buckets.
+- A result of `WITHIN_OBSERVED_TARGETS` means only that the returned Analytics evidence met these two observation criteria. It is not a production release PASS, an entitlement/plan certification, or proof that every individual invocation stayed below the Free CPU limit.
+
+Possible `freeCpuEvidence.status` values are `NO_DATA`, `INCOMPLETE`, `NO_TRAFFIC`, `P99_ABOVE_TARGET`, `INSUFFICIENT_QUALIFIED_COVERAGE`, and `WITHIN_OBSERVED_TARGETS`. A report can be `MEASURED` while its Free evidence is above target or has insufficient qualified traffic.
 
 ## Interpretation
 
-A 10-request bucket qualification is a reporting aid, not an execution policy. Do not discard low-sample P99 values. A rare successful request above the Free CPU allowance is not evidence of sustained compliance; conversely, a minute-bucket quantile is not an individual-request trace. Correlate the report with controlled staging runs and Cloudflare's actual invocation outcomes before deciding whether to alter integrity verification or the CPU Gate.
+A 10-request bucket qualification is used only to decide whether a minute's P50 sample is sufficiently populated. The 80% coverage ratio is calculated from the `sum.requests` values returned by Cloudflare's `workersInvocationsAdaptive` dataset; it is therefore subject to Cloudflare Analytics adaptive sampling and extrapolation, not an independently counted raw-request census. Cloudflare documents that Analytics can select 100%, 10%, or 1% resolutions and extrapolate aggregate metrics. Keep that sampling caveat with the evidence, and do not assume `MEASURED` means the query used 100% resolution. See [Understanding sampling in Cloudflare Analytics](https://developers.cloudflare.com/analytics/sampling/).
+
+Do not discard low-sample P99 values. A rare successful request above the Free CPU allowance is not evidence of sustained compliance; conversely, a minute-bucket quantile is not an individual-request trace. Correlate the report with controlled staging runs and Cloudflare's actual invocation outcomes before deciding whether to alter integrity verification or the CPU Gate.
 
 The Worker still performs per-shard SHA-256 verification when a table is first loaded into a given isolate, including a Cache API hit. This report measures end-to-end Worker CPU at the one-minute bucket level; it does not attribute CPU to the SHA-256 operation alone.
 

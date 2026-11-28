@@ -17,7 +17,7 @@ A secure, high-performance DNS-over-HTTPS (DoH) proxy running on Cloudflare's gl
 *   **ECS Geo-Optimization (RFC 7871)**: Injects EDNS Client Subnet (IPv4 `/24`, IPv6 `/48`) to ensure CDNs (Akamai, CloudFront, Fastly, BunnyCDN, Gcore) resolve you to the nearest servers.
 *   **Sequential Failover Reliability**: 
     *   **Primary/Fallback**: Tries the primary upstream first, with automatic failover to a *different* backup resolver if it fails.
-    *   **Geo-Bypass**: Automatically detects geo-blocked results (127.0.0.1) and re-resolves via **Mullvad DNS**.
+    *   **Geo-Bypass**: If a resolver returns a loopback answer (127.0.0.1), the Worker can retry only for domains explicitly allowed by `GEO_BYPASS_ALLOWLIST`, using the configured no-ECS Geo-Bypass resolvers (Quad9 by default).
 *   **Optional Access Token**: Set a `DOH_TOKEN` environment variable to require `/dns-query/<token>`, keeping strangers from burning your free-tier quota.
 *   **Early Response Filtering**: Drops unnecessary query types (`ANY`, `AAAA`, `PTR`, `HTTPS`) at the edge to save resources and improve speed.
 *   **Private TLD Shield**: Prevents local/internal domain leaks (e.g., `.local`, `.lan`, router logins) by returning `NXDOMAIN` instantly.
@@ -36,12 +36,19 @@ A secure, high-performance DNS-over-HTTPS (DoH) proxy running on Cloudflare's gl
 
 `Update DNS Blocklists` checks its sources every 3 hours, applies minimum-count and maximum-drop guards, then opens or updates a **draft PR**. Review the draft PR, click **Ready for review** to trigger CI, then merge only after all checks pass. It does not push rule changes straight to `main`. While a rule-review PR is open, scheduled refreshes are skipped so its reviewed HEAD cannot silently move.
 
-The `Compile and Publish Rules to R2` workflow is **manual-only** and defaults to `dry-run`. Choose `publish` explicitly only when you have approved a ruleset and intend to write Production R2.
+The `Compile and Publish Rules to R2` workflow is **manual-only** and defaults to `dry-run`. Choose `publish` explicitly only when you have approved a ruleset and intend to write Production R2. The local publisher also requires an explicit `R2_BUCKET_NAME`; it never chooses a bucket implicitly.
 
-### 2. Deploy to Cloudflare Workers
-1. Connect the repository to Cloudflare Workers using the Workers build/deployment flow.
+**Important — first-install behavior:** when a Worker has the `RULES_BUCKET` binding but R2 has no valid, integrity-verified `compiled/latest.json` snapshot (or its selected shard is missing/corrupt and no verified prior snapshot exists), the Worker deliberately returns DNS **SERVFAIL**. It does not treat a missing rule set as an empty allow-all list and does not forward the query upstream. Bootstrap and verify the rules snapshot before exposing a new Worker.
+
+### 2. Bootstrap an isolated staging deployment
+Use [Staging Bootstrap and First DNS Validation](docs/STAGING_BOOTSTRAP.md). It creates a separate `dns-compiled-rules-staging` bucket, compiles and dry-runs the artifacts, publishes only after confirming the explicit staging bucket name, then deploys with `wrangler.staging.jsonc`. The staging Worker is named `serverless-edge-dns-gateway-staging`.
+
+Never deploy the production `wrangler.jsonc` configuration as a staging Worker, and never reuse production R2 credentials, DoH URL or token.
+
+### 3. Deploy to Cloudflare Workers
+1. For a new deployment, first confirm that the R2 bucket selected by the Worker binding already contains a verified snapshot.
 2. Set the required Worker variables/secrets described below.
-3. Deploy with Wrangler or your configured Workers build pipeline.
+3. Deploy only the configuration for the intended environment. The staging configuration is `wrangler.staging.jsonc`; `wrangler.jsonc` is the production configuration and must remain behind the production release process.
 
 ---
 
@@ -54,8 +61,13 @@ Per-deployment settings (upstreams, access token, CORS) are read from **environm
 | Variable | Default | Description |
 | :--- | :--- | :--- |
 | `UPSTREAM_PRIMARY` | `https://cloudflare-dns.com/dns-query` | Main resolver URL. |
-| `UPSTREAM_FALLBACK` | `https://dns.google/dns-query` | Backup resolver (use a *different* provider so failover actually helps). |
-| `UPSTREAM_GEO_BYPASS`| `https://dns.mullvad.net/dns-query` | Used when upstream returns loopback (127.0.0.1). |
+| `UPSTREAM_FALLBACK` | `https://dns.quad9.net/dns-query` | Non-ECS backup resolver. |
+| `UPSTREAM_ECS` | `https://dns.google/dns-query` | Primary resolver for domains eligible for selective ECS. |
+| `UPSTREAM_ECS_FALLBACK` | `https://dns11.quad9.net/dns-query` | ECS-capable fallback resolver. |
+| `UPSTREAM_GEO_BYPASS` | `https://dns10.quad9.net/dns-query` | No-ECS resolver used for an explicitly allowlisted geo-bypass retry. |
+| `UPSTREAM_GEO_BYPASS_FALLBACK` | `https://dns.quad9.net/dns-query` | Fallback for the geo-bypass resolver. |
+| `GEO_BYPASS_MODE` | `allowlist` | `allowlist`, `disabled`, or `legacy-loopback`. The allowlist mode is inactive for domains until configured. |
+| `GEO_BYPASS_ALLOWLIST` | *(empty)* | Comma-separated domains/subdomains eligible for a loopback-result retry. |
 | `DOH_TOKEN` | *(empty)* | Optional access token. When set, all endpoints require it as a path segment: `/dns-query/<token>`, `/apple/<token>`, `/debug/<token>`. Untokened paths return 404. |
 | `CORS_ORIGIN` | *(empty)* | Optional CORS origin. Native browser/OS DoH does **not** need CORS; set `*` only if you want websites to query the endpoint via JavaScript. |
 | `DEBUG_ENABLED` | *(empty)* | Set `true` to enable the `/debug` endpoint. |
@@ -74,7 +86,7 @@ Per-deployment settings (upstreams, access token, CORS) are read from **environm
 | `BLOCK_ANY` | `false` | Blocks resource-heavy ANY queries. |
 | `BLOCK_PTR` | `false` | Blocks reverse DNS queries. |
 | `BLOCK_PRIVATE_TLD` | `true` | Blocks internal/router domains. |
-| `ECS_INJECTION_ENABLED` | `true` | Enables ECS Injection (Required for accurate CDN). |
+| `ECS_MODE` | `selective` in Wrangler config | Selective ECS uses the dedicated ECS upstream pair for domains in the ECS allowlist; set `off` to disable ECS injection. |
 
 ---
 
@@ -134,7 +146,7 @@ Device ──DoH──▶ Cloudflare Worker (Layer 1: ads/tracking ~1M domains, 
 *   [rules/allowlists.txt](rules/allowlists.txt) is the **shared allowlist**: the Edge layer reads it directly and the Layer 2 workflow pulls the same file via raw URL, so both layers exempt the same domains. It is regenerated by the Layer 1 workflow, so permanent entries belong in that workflow's allowlist sources, not in the file itself. Layer 2 picks up allowlist changes the next time you run it manually.
 *   The workflow **fails loudly if a source list breaks**. CGPS's downloader does not check HTTP status — a 404 silently produces an empty list and still reports success — so a verification step aborts the run when the blocklist has fewer than 50,000 domains (override with the `MIN_BLOCK_DOMAINS` Actions variable).
 *   Additionally enable the built-in **Security Categories** (malware, phishing, new domains) in your Zero Trust Gateway policies — they are free and do not count against the 300k list quota.
-*   Keep the Gateway block response at its default (`0.0.0.0`). Do **not** use a block response of `127.0.0.1` — the Geo-Bypass logic treats loopback answers as geo-blocking and would re-resolve (unblock) them via Mullvad.
+*   Keep the Gateway block response at its default (`0.0.0.0`). Do **not** use a block response of `127.0.0.1` — an explicitly configured Geo-Bypass allowlist can treat loopback answers as geo-blocking and retry them via the configured Quad9 Geo-Bypass upstream. That can unintentionally turn a block response into a successful resolution.
 
 ---
 

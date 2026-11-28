@@ -13,10 +13,18 @@ import { pathToFileURL } from "node:url";
 import { validateEdnsV1Buffer } from "../src/rules-binary-format.ts";
 import { assertManifestInvariants, projectManifestFromHistory, rollbackSnapshot, unrevokeSha } from "./r2-state.mjs";
 
-const DEFAULT_BUCKET = "dns-compiled-rules";
 const LATEST_KEY = "compiled/latest.json";
 const DEFAULT_RETENTION_LIMIT = 5;
 const SHA_RE = /^[0-9a-f]{64}$/;
+
+export function resolveBucketName(raw = process.env.R2_BUCKET_NAME) {
+  if (typeof raw !== "string" || raw.trim() === "") {
+    throw new Error(
+      "R2_BUCKET_NAME is required; set the exact target bucket explicitly. The publisher never selects a bucket implicitly.",
+    );
+  }
+  return raw.trim();
+}
 
 export function resolveRetentionLimit(envVal = process.env.RETENTION_LIMIT) {
   if (envVal === undefined || envVal === "") return DEFAULT_RETENTION_LIMIT;
@@ -368,7 +376,7 @@ async function readLocalShardArtifacts(outDir, snapshotSha, expectedRules, shard
 
 async function main() {
   const dryRun = process.argv.includes("--dry-run");
-  const bucket = process.env.R2_BUCKET_NAME || DEFAULT_BUCKET;
+  const bucket = resolveBucketName();
   const retentionLimit = resolveRetentionLimit();
 
   // FIX 2: source-independent dispatch. Rollback/unrevoke branch before any local artifact read.

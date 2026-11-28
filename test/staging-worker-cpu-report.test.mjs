@@ -4,6 +4,8 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { test } from "node:test";
 import {
+  DEFAULT_FREE_CPU_P99_LIMIT_MS,
+  DEFAULT_MIN_FREE_P50_REQUEST_COVERAGE_PERCENT,
   DEFAULT_MIN_P50_BUCKET_REQUESTS,
   METRIC_BUCKET_LIMIT,
   runStagingWorkerCpuReport,
@@ -20,6 +22,10 @@ const reportScript = await readFile(
   resolve(root, "scripts/staging-worker-cpu-report.mjs"),
   "utf8",
 );
+const productionGateScript = await readFile(
+  resolve(root, "scripts/production-worker-deployment-gate.mjs"),
+  "utf8",
+);
 const stagingConfig = await readFile(
   resolve(root, "wrangler.staging.jsonc"),
   "utf8",
@@ -31,12 +37,11 @@ function row({
   p50Us = 1500,
   p99Us = 5000,
   minute = "2026-11-28T04:00:00Z",
-  status = "success",
 } = {}) {
   return {
     sum: { requests, errors },
     quantiles: { cpuTimeP50: p50Us, cpuTimeP99: p99Us },
-    dimensions: { datetimeMinute: minute, status },
+    dimensions: { datetimeMinute: minute },
   };
 }
 
@@ -55,6 +60,12 @@ test("staging report converts CPU microseconds to milliseconds and keeps low-sam
   assert.equal(report.maxCpuP50MsQualifiedBuckets, 1.435);
   assert.equal(report.maxCpuP99MsAllBuckets, 41.11);
   assert.equal(report.maxCpuP99MsLowSampleBuckets, 41.11);
+  assert.equal(report.qualifiedP50RequestCount, 128);
+  assert.equal(report.lowSampleRequestCount, 2);
+  assert.equal(report.qualifiedP50RequestCoveragePercent, 98.462);
+  assert.equal(report.freeCpuEvidence.status, "P99_ABOVE_TARGET");
+  assert.equal(report.freeCpuEvidence.p99WithinLimit, false);
+  assert.equal(report.freeCpuEvidence.qualifiedRequestCoverageMeetsMinimum, true);
   assert.equal(report.units.conversion, "microseconds / 1000");
   assert.equal(report.reportType, "measurement-only; no release threshold is evaluated");
 });
@@ -69,6 +80,60 @@ test("staging report never calls low-sample P50 a pass and never drops low-sampl
   assert.equal(report.maxCpuP50MsAllBuckets, 35);
   assert.equal(report.maxCpuP50MsQualifiedBuckets, 2);
   assert.equal(report.maxCpuP99MsAllBuckets, 44);
+  assert.equal(report.freeCpuEvidence.status, "P99_ABOVE_TARGET");
+});
+
+test("Free CPU evidence requires 80 percent qualified-request coverage and a 10 ms P99 ceiling", () => {
+  const report = summarizeStagingWorkerMetricRows([
+    row({ requests: 8, p50Us: 7000, p99Us: 9000 }),
+    row({ requests: 32, p50Us: 3000, p99Us: 9500, minute: "2026-11-28T04:01:00Z" }),
+  ]);
+
+  assert.equal(report.status, "MEASURED");
+  assert.equal(report.minP50BucketRequests, DEFAULT_MIN_P50_BUCKET_REQUESTS);
+  assert.equal(report.qualifiedP50RequestCount, 32);
+  assert.equal(report.lowSampleRequestCount, 8);
+  assert.equal(report.qualifiedP50RequestCoveragePercent, 80);
+  assert.equal(report.freeCpuEvidence.cpuP99LimitMs, DEFAULT_FREE_CPU_P99_LIMIT_MS);
+  assert.equal(
+    report.freeCpuEvidence.minQualifiedRequestCoveragePercent,
+    DEFAULT_MIN_FREE_P50_REQUEST_COVERAGE_PERCENT,
+  );
+  assert.equal(report.freeCpuEvidence.p99WithinLimit, true);
+  assert.equal(report.freeCpuEvidence.qualifiedRequestCoverageMeetsMinimum, true);
+  assert.equal(report.freeCpuEvidence.status, "WITHIN_OBSERVED_TARGETS");
+  assert.match(report.freeCpuEvidence.assessmentType, /not a production release gate/);
+});
+
+test("Free CPU P99 tail guard still includes low-sample minute buckets", () => {
+  const report = summarizeStagingWorkerMetricRows([
+    row({ requests: 1, p50Us: 12000, p99Us: 10001 }),
+    row({ requests: 99, p50Us: 3000, p99Us: 9000, minute: "2026-11-28T04:01:00Z" }),
+  ]);
+
+  assert.equal(report.qualifiedP50RequestCoveragePercent, 99);
+  assert.equal(report.maxCpuP99MsLowSampleBuckets, 10.001);
+  assert.equal(report.freeCpuEvidence.p99WithinLimit, false);
+  assert.equal(report.freeCpuEvidence.status, "P99_ABOVE_TARGET");
+});
+
+test("Free CPU evidence is not assessable when fewer than 80 percent of requests are in qualified minutes", () => {
+  const report = summarizeStagingWorkerMetricRows([
+    row({ requests: 9, p99Us: 8000 }),
+    row({ requests: 1, p99Us: 7000, minute: "2026-11-28T04:01:00Z" }),
+  ]);
+
+  assert.equal(report.status, "MEASURED");
+  assert.equal(report.qualifiedP50RequestCoveragePercent, 0);
+  assert.equal(report.freeCpuEvidence.qualifiedRequestCoverageMeetsMinimum, false);
+  assert.equal(report.freeCpuEvidence.status, "INSUFFICIENT_QUALIFIED_COVERAGE");
+});
+
+test("staging and production CPU queries aggregate by minute without splitting on invocation status", () => {
+  assert.match(reportScript, /dimensions \{ datetimeMinute scriptName \}/);
+  assert.doesNotMatch(reportScript, /dimensions\s*\{[^}]*\bstatus\b/s);
+  assert.match(productionGateScript, /dimensions\s*\{\s*datetimeMinute\s+scriptName\s*\}/);
+  assert.doesNotMatch(productionGateScript, /dimensions\s*\{[^}]*\bstatus\b[^}]*\}/s);
 });
 
 test("staging report marks an exact GraphQL row-cap result incomplete", () => {
@@ -102,6 +167,7 @@ test("staging report distinguishes no data from a measured zero", () => {
   assert.equal(report.status, "NO_DATA");
   assert.equal(report.bucketCount, 0);
   assert.equal(report.maxCpuP99MsAllBuckets, null);
+  assert.equal(report.freeCpuEvidence.status, "NO_DATA");
 });
 
 test("staging Worker name validation rejects production and non-staging Worker names", () => {
@@ -163,6 +229,8 @@ test("staging metrics runner queries only analytics and rejects production names
   const queryBody = JSON.parse(requestOptions.body);
   assert.equal(queryBody.variables.scriptName, env.STAGING_WORKER_NAME);
   assert.match(queryBody.query, /workersInvocationsAdaptive/);
+  assert.match(queryBody.query, /dimensions \{ datetimeMinute scriptName \}/);
+  assert.doesNotMatch(queryBody.query, /dimensions\s*\{[^}]*\bstatus\b/s);
 
   await assert.rejects(
     () => runStagingWorkerCpuReport({

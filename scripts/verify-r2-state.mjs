@@ -160,8 +160,17 @@ async function requiredEnv(name) {
   return value;
 }
 
+export function resolveVerificationBucketName(raw = process.env.R2_BUCKET_NAME) {
+  if (typeof raw !== "string" || raw.trim() === "") {
+    throw new Error(
+      "R2_BUCKET_NAME is required; set the exact bucket to verify explicitly.",
+    );
+  }
+  return raw.trim();
+}
+
 async function main() {
-  const bucket = process.env.R2_BUCKET_NAME || "dns-compiled-rules";
+  const bucket = resolveVerificationBucketName();
   const retentionLimit = resolveRetentionLimit();
   const endpoint = await requiredEnv("R2_ENDPOINT");
   const accessKeyId = await requiredEnv("R2_ACCESS_KEY_ID");

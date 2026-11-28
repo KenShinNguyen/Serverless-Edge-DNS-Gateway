@@ -13,7 +13,7 @@ Dịch vụ DNS-over-HTTPS (DoH) bảo mật, hiệu năng cao, chạy trên h�
 *   **Tối ưu hóa vị trí địa lý (ECS - RFC 7871)**: Tự động chèn EDNS Client Subnet (IPv4 `/24`, IPv6 `/48`) để đảm bảo các CDN (như Akamai, CloudFront, Fastly, BunnyCDN, Gcore) điều hướng bạn đến máy chủ gần nhất.
 *   **Độ tin cậy cao với hệ thống dự phòng**: 
     *   **Primary/Fallback**: Tự động chuyển sang máy chủ dự phòng (*khác nhà cung cấp*) nếu máy chủ chính gặp sự cố.
-    *   **Geo-Bypass**: Tự động phát hiện kết quả bị chặn địa lý (loopback 127.0.0.1) và phân giải lại qua **Mullvad DNS**.
+    *   **Geo-Bypass**: Khi resolver trả về địa chỉ loopback (127.0.0.1), Worker chỉ thử phân giải lại với domain được khai báo rõ trong `GEO_BYPASS_ALLOWLIST`, thông qua cặp resolver Geo-Bypass không ECS (mặc định là Quad9).
 *   **Token bảo vệ endpoint (tuỳ chọn)**: Đặt biến môi trường `DOH_TOKEN` để yêu cầu `/dns-query/<token>`, tránh người lạ dùng chùa làm cạn hạn mức miễn phí của bạn.
 *   **Bộ lọc truy vấn sớm (Edge Filtering)**: Loại bỏ các truy vấn không cần thiết (`ANY`, `AAAA`, `PTR`, `HTTPS`) ngay tại Edge để tiết kiệm tài nguyên và tăng tốc độ phản hồi.
 *   **Lớp bảo vệ TLD nội bộ**: Ngăn rò rỉ các domain nội bộ (như `.local`, `.lan`, trang quản trị router) ra môi trường internet bằng cách trả về `NXDOMAIN` ngay lập tức.
@@ -32,12 +32,19 @@ Dịch vụ DNS-over-HTTPS (DoH) bảo mật, hiệu năng cao, chạy trên h�
 
 `Update DNS Blocklists` kiểm tra nguồn mỗi 3 giờ, áp dụng guard số lượng tối thiểu và mức sụt tối đa, rồi tạo/cập nhật **PR nháp**. Bạn phải review PR nháp, bấm **Ready for review** để kích hoạt CI, rồi chỉ merge khi mọi check đều xanh; workflow không tự commit rule vào `main`. Trong lúc có PR rule đang mở, các lần cron mới sẽ bỏ qua để HEAD đang được review không tự thay đổi.
 
-Workflow `Compile and Publish Rules to R2` chỉ chạy thủ công và mặc định là `dry-run`. Chỉ chọn `publish` khi đã duyệt ruleset và chủ động muốn ghi Production R2.
+Workflow `Compile and Publish Rules to R2` chỉ chạy thủ công và mặc định là `dry-run`. Chỉ chọn `publish` khi đã duyệt ruleset và chủ động muốn ghi Production R2. Khi chạy publisher trực tiếp, bắt buộc khai báo rõ `R2_BUCKET_NAME`; script không tự chọn bucket mặc định.
 
-### 2. Triển khai lên Cloudflare Workers
-1. Kết nối repository với Cloudflare Workers bằng luồng build/deploy của Workers.
+**Quan trọng — hành vi khi cài mới:** nếu Worker đã bind `RULES_BUCKET` nhưng R2 chưa có snapshot `compiled/latest.json` hợp lệ và đã xác minh integrity (hoặc shard được chọn bị thiếu/hỏng trong khi không có snapshot cũ đã xác minh), Worker chủ động trả DNS **SERVFAIL**. Worker không coi bộ luật rỗng là trạng thái cho phép tất cả và cũng không chuyển truy vấn lên upstream. Hãy bootstrap và xác minh snapshot luật trước khi đưa Worker mới ra sử dụng.
+
+### 2. Bootstrap staging độc lập
+Làm theo [Staging Bootstrap and First DNS Validation](docs/STAGING_BOOTSTRAP.md). Runbook tạo bucket riêng `dns-compiled-rules-staging`, compile và dry-run artifact, chỉ publish sau khi xác nhận chính xác tên bucket staging, rồi deploy bằng `wrangler.staging.jsonc`. Tên Worker staging là `serverless-edge-dns-gateway-staging`.
+
+Không dùng cấu hình production `wrangler.jsonc` để deploy staging và không tái sử dụng credential R2, DoH URL hoặc token production.
+
+### 3. Triển khai lên Cloudflare Workers
+1. Với deployment mới, xác nhận bucket R2 được Worker binding trỏ tới đã có snapshot hợp lệ và được xác minh.
 2. Cấu hình các biến và secret của Worker theo phần bên dưới.
-3. Deploy bằng Wrangler hoặc pipeline Workers đã cấu hình.
+3. Chỉ deploy cấu hình đúng môi trường. Staging dùng `wrangler.staging.jsonc`; `wrangler.jsonc` là cấu hình production và phải đi qua quy trình release production riêng.
 
 ---
 
@@ -50,8 +57,13 @@ Các cài đặt theo từng deployment (upstream, token, CORS) được đọc 
 | Biến | Mặc định | Mô tả |
 | :--- | :--- | :--- |
 | `UPSTREAM_PRIMARY` | `https://cloudflare-dns.com/dns-query` | URL máy chủ phân giải chính. |
-| `UPSTREAM_FALLBACK` | `https://dns.google/dns-query` | Máy chủ dự phòng (nên dùng *nhà cung cấp khác* để failover có ý nghĩa thật sự). |
-| `UPSTREAM_GEO_BYPASS`| `https://dns.mullvad.net/dns-query` | Dùng khi máy chủ chính trả về loopback (127.0.0.1). |
+| `UPSTREAM_FALLBACK` | `https://dns.quad9.net/dns-query` | Máy chủ dự phòng cho luồng không ECS. |
+| `UPSTREAM_ECS` | `https://dns.google/dns-query` | Resolver chính cho domain đủ điều kiện dùng selective ECS. |
+| `UPSTREAM_ECS_FALLBACK` | `https://dns11.quad9.net/dns-query` | Resolver dự phòng có hỗ trợ ECS. |
+| `UPSTREAM_GEO_BYPASS` | `https://dns10.quad9.net/dns-query` | Resolver không ECS dùng khi retry geo-bypass cho domain đã allowlist. |
+| `UPSTREAM_GEO_BYPASS_FALLBACK` | `https://dns.quad9.net/dns-query` | Resolver dự phòng của luồng geo-bypass. |
+| `GEO_BYPASS_MODE` | `allowlist` | Các chế độ `allowlist`, `disabled`, `legacy-loopback`. Ở chế độ allowlist, cần khai báo domain thì mới kích hoạt. |
+| `GEO_BYPASS_ALLOWLIST` | *(trống)* | Danh sách domain/subdomain cách nhau bằng dấu phẩy được phép retry khi nhận loopback. |
 | `DOH_TOKEN` | *(trống)* | Token truy cập tuỳ chọn. Khi đặt, mọi endpoint yêu cầu token trong path: `/dns-query/<token>`, `/apple/<token>`, `/debug/<token>`. Path không có token trả về 404. |
 | `CORS_ORIGIN` | *(trống)* | Origin CORS tuỳ chọn. DoH gốc của trình duyệt/hệ điều hành **không** cần CORS; chỉ đặt `*` nếu bạn muốn website bên ngoài truy vấn endpoint qua JavaScript. |
 | `DEBUG_ENABLED` | *(trống)* | Đặt `true` để bật endpoint `/debug`. |
@@ -70,7 +82,7 @@ Các cài đặt theo từng deployment (upstream, token, CORS) được đọc 
 | `BLOCK_ANY` | `false` | Chặn các truy vấn ANY tiêu tốn tài nguyên. |
 | `BLOCK_PTR` | `false` | Chặn truy vấn DNS ngược. |
 | `BLOCK_PRIVATE_TLD` | `true` | Chặn các domain nội bộ hoặc router. |
-| `ECS_INJECTION_ENABLED` | `true` | Bật ECS Injection (Cần thiết để trả về đúng CDN). |
+| `ECS_MODE` | `selective` trong cấu hình Wrangler | Selective ECS dùng cặp upstream ECS riêng cho domain nằm trong ECS allowlist; đặt `off` để tắt chèn ECS. |
 
 ---
 
@@ -130,7 +142,7 @@ Thiết bị ──DoH──▶ Cloudflare Worker (Lớp 1: quảng cáo/trackin
 *   [rules/allowlists.txt](rules/allowlists.txt) là **allowlist dùng chung**: lớp Edge đọc trực tiếp, workflow lớp 2 kéo đúng file đó qua raw URL nên 2 lớp cùng mở chặn một tập domain. File này do workflow lớp 1 sinh lại mỗi lần chạy, nên muốn thêm domain lâu dài thì thêm vào nguồn allowlist của workflow đó chứ không sửa trực tiếp file. Lớp 2 nhận allowlist mới ở lần bạn chạy nó thủ công kế tiếp.
 *   Workflow **fail rõ ràng nếu nguồn list hỏng**. Bộ tải của CGPS không kiểm tra HTTP status — URL 404 vẫn tạo file rỗng rồi báo thành công — nên có thêm bước kiểm tra: dừng job nếu blocklist dưới 50.000 domain (đổi được bằng Actions variable `MIN_BLOCK_DOMAINS`).
 *   Nên bật thêm các **Security Category có sẵn** (malware, phishing, new domains) trong Gateway policy của Zero Trust — hoàn toàn miễn phí và không tính vào quota 300k.
-*   Giữ nguyên kiểu chặn mặc định của Gateway (trả về `0.0.0.0`). **Không** dùng kiểu chặn trả về `127.0.0.1` — logic Geo-Bypass sẽ coi đó là geo-block và re-resolve qua Mullvad, vô tình mở chặn domain đó.
+*   Giữ kiểu phản hồi chặn mặc định của Gateway (`0.0.0.0`). **Không** dùng `127.0.0.1` làm địa chỉ chặn — nếu domain nằm trong Geo-Bypass allowlist, logic có thể coi loopback là kết quả chặn địa lý và retry qua upstream Geo-Bypass Quad9, vô tình biến phản hồi chặn thành phân giải thành công.
 
 ---
 
