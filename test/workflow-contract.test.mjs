@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { test } from "node:test";
+import { resolveBucketName } from "../scripts/publish-r2.mjs";
 import { resolveVerificationBucketName } from "../scripts/verify-r2-state.mjs";
 import { runReadOnlyR2Gate } from "../scripts/verify-r2-state-readonly.mjs";
 
